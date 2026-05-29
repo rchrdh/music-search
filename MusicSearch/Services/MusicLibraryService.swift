@@ -23,6 +23,6 @@ enum MusicLibraryService {
             offset += items.count
         }
 
-        return collected.prefix(max).map(LibraryAlbum.init)
+        return collected.prefix(max).map { LibraryAlbum($0) }
     }
 }
