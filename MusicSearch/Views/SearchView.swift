@@ -46,12 +46,18 @@ struct SearchView: View {
             switch model.phase {
             case .idle:
                 idleState
-            case .searching:
-                searchingState
-            case .results:
-                resultsState
             case .error(let message):
                 errorState(message)
+            case .searching, .results:
+                if model.results.isEmpty {
+                    if model.phase == .searching {
+                        searchingState
+                    } else {
+                        ContentUnavailableView.search(text: model.trimmedQuery)
+                    }
+                } else {
+                    resultsState
+                }
             }
         }
     }
@@ -94,18 +100,28 @@ struct SearchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    @ViewBuilder
     private var resultsState: some View {
-        if model.results.isEmpty {
-            ContentUnavailableView.search(text: model.trimmedQuery)
-        } else {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(model.results) { result in
-                        AlbumGridItem(result: result) { play(result.album) }
-                    }
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(model.results) { result in
+                    AlbumGridItem(result: result) { play(result.album) }
                 }
-                .padding()
+            }
+            .padding()
+        }
+        // Live progress bar while more batches are still being searched.
+        .safeAreaInset(edge: .top) {
+            if model.phase == .searching {
+                VStack(spacing: 4) {
+                    ProgressView(value: model.progress)
+                        .progressViewStyle(.linear)
+                    Text("Found \(model.results.count) so far · \(Int(model.progress * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
             }
         }
     }
@@ -158,7 +174,7 @@ struct SearchView: View {
     // MARK: - Actions
 
     private func runSearch() {
-        Task { await model.run(in: appModel.albums) }
+        model.search(in: appModel.albums)
     }
 
     private func play(_ album: LibraryAlbum) {

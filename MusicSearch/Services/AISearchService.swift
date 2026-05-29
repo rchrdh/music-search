@@ -1,21 +1,23 @@
 import Foundation
 
+/// An incremental update emitted while a search is running, so the UI can show
+/// matches as they're found instead of waiting for the whole library.
+struct SearchUpdate: Sendable {
+    /// New matches discovered by the batch that just completed.
+    let newResults: [SearchResult]
+    /// Overall progress so far, in the range 0...1.
+    let progress: Double
+}
+
 /// Abstracts the natural-language search so the matching engine can be swapped
 /// (on-device Foundation Models today, something else later).
 protocol AISearchService: Sendable {
-    /// Returns the albums in `albums` that match the natural-language `query`.
-    /// `progress` is called with a value in 0...1 as batches complete.
-    func search(
+    /// Streams matches as batches of the library are evaluated. Results arrive
+    /// progressively; the stream finishes when the whole library is searched.
+    func searchStream(
         query: String,
-        in albums: [LibraryAlbum],
-        progress: @escaping @Sendable (Double) -> Void
-    ) async throws -> [SearchResult]
-}
-
-extension AISearchService {
-    func search(query: String, in albums: [LibraryAlbum]) async throws -> [SearchResult] {
-        try await search(query: query, in: albums, progress: { _ in })
-    }
+        in albums: [LibraryAlbum]
+    ) -> AsyncThrowingStream<SearchUpdate, Error>
 }
 
 /// Chooses the best available search implementation for this device.

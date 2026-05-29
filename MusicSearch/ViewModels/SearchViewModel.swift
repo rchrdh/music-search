@@ -2,7 +2,9 @@ import Foundation
 import Observation
 
 /// Drives the search screen: holds the query, runs the AI search, and exposes
-/// progress and results to the view.
+/// progress and results to the view. Results stream in progressively, repeated
+/// queries are served from an in-memory cache, and starting a new search
+/// cancels any search already in flight.
 @MainActor
 @Observable
 final class SearchViewModel {
@@ -23,6 +25,9 @@ final class SearchViewModel {
     let usesOnDeviceModel: Bool
 
     private let service: AISearchService
+    private var searchTask: Task<Void, Never>?
+    /// Cached results keyed by library size + normalized query.
+    private var cache: [String: [SearchResult]] = [:]
 
     init(service: AISearchService = SearchServiceFactory.make()) {
         self.service = service
@@ -35,38 +40,59 @@ final class SearchViewModel {
 
     var canSearch: Bool { !trimmedQuery.isEmpty && phase != .searching }
 
-    func run(in albums: [LibraryAlbum]) async {
+    /// Starts a search, cancelling any search already running.
+    func search(in albums: [LibraryAlbum]) {
+        searchTask?.cancel()
+        searchTask = Task { await run(in: albums) }
+    }
+
+    private func run(in albums: [LibraryAlbum]) async {
         let q = trimmedQuery
         guard !q.isEmpty else { return }
+
+        // Serve identical repeat searches instantly.
+        let key = cacheKey(for: q, albums: albums)
+        if let cached = cache[key] {
+            results = cached
+            progress = 1
+            phase = .results
+            return
+        }
 
         phase = .searching
         progress = 0
         results = []
 
-        // Bridge the @Sendable progress callback back onto the main actor.
-        let (stream, continuation) = AsyncStream<Double>.makeStream()
-        let progressTask = Task { [weak self] in
-            for await value in stream { self?.progress = value }
-        }
-        defer { progressTask.cancel() }
-
+        var accumulated: [SearchResult] = []
         do {
-            let found = try await service.search(query: q, in: albums) { value in
-                continuation.yield(value)
+            for try await update in service.searchStream(query: q, in: albums) {
+                if Task.isCancelled { return }
+                if !update.newResults.isEmpty {
+                    accumulated.append(contentsOf: update.newResults)
+                    accumulated.sort { $0.relevance > $1.relevance }
+                    results = accumulated
+                }
+                progress = update.progress
             }
-            continuation.finish()
-            results = found
+            if Task.isCancelled { return }
+            cache[key] = accumulated
             phase = .results
+        } catch is CancellationError {
+            // Superseded by a newer search; leave state for that search to own.
         } catch {
-            continuation.finish()
             phase = .error(error.localizedDescription)
         }
     }
 
     func reset() {
+        searchTask?.cancel()
         query = ""
         results = []
         phase = .idle
         progress = 0
+    }
+
+    private func cacheKey(for query: String, albums: [LibraryAlbum]) -> String {
+        "\(albums.count)|\(query.lowercased())"
     }
 }
