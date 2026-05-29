@@ -20,12 +20,30 @@ protocol AISearchService: Sendable {
     ) -> AsyncThrowingStream<SearchUpdate, Error>
 }
 
-/// Chooses the best available search implementation for this device.
+/// Which engine backs the active search service, for display purposes.
+enum SearchEngine {
+    case metadata
+    case onDevice
+    case keyword
+}
+
+/// Chooses the best available search implementation. Prefers metadata-based
+/// search (most accurate) when a Last.fm key is configured, then the on-device
+/// model, then a keyword fallback.
 enum SearchServiceFactory {
     static func make() -> AISearchService {
+        if let key = Secrets.lastFMAPIKey {
+            return MetadataSearchService(client: LastFMClient(apiKey: key))
+        }
         if FoundationModelSearchService.isAvailable {
             return FoundationModelSearchService()
         }
         return LocalSearchService()
+    }
+
+    static func engine(for service: AISearchService) -> SearchEngine {
+        if service is MetadataSearchService { return .metadata }
+        if service is FoundationModelSearchService { return .onDevice }
+        return .keyword
     }
 }

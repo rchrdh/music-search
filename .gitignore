@@ -16,3 +16,6 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Secrets (API keys) — do not commit
+MusicSearch/Secrets.plist

@@ -18,16 +18,38 @@ Example queries:
    MusicKit.
 2. **Load library** — your saved albums (with artist and genre metadata) are
    read from your library.
-3. **AI search** — your query and the library are interpreted by Apple's
-   **on-device language model** (the Foundation Models framework). The model
-   runs privately on-device and selects the albums that match, using its own
-   knowledge of artists, genres, languages, and moods. The library is sent to
-   the model in batches to fit its context window.
-4. **Results** — matches appear in a grid with a short reason for each. Tap an
+3. **Enrich** — in the background, each album is enriched once with descriptive
+   **tags from Last.fm** (genre, mood, style, language, "instrumental", etc.)
+   and the result is cached on disk, so it's a one-time cost.
+4. **Search** — your query is parsed into structured intent (descriptive tags
+   plus any "like *artist*" references) and matched **locally** against the
+   cached metadata. "Like *artist*" requests use Last.fm's similar-artists
+   endpoint. This is accurate (grounded in real metadata) and fast (no
+   per-album model calls at search time).
+5. **Results** — matches appear in a grid with a short reason for each. Tap an
    album to play it, or create an Apple Music playlist from all results.
 
-If the on-device model isn't available (older device, or Apple Intelligence
-turned off), the app falls back to simple keyword matching so it still works.
+### Search engine selection
+
+The app picks the best available engine automatically:
+
+- **Metadata (Last.fm)** — used when a Last.fm API key is configured. Most
+  accurate; see setup below.
+- **On-device model** — falls back to Apple's Foundation Models framework when
+  no key is set. Private, but the small on-device model is less reliable at
+  recalling facts like an album's language.
+- **Keyword** — final fallback when neither is available.
+
+## Last.fm setup (for metadata search)
+
+1. Get a free API key: https://www.last.fm/api/account/create
+2. Provide it in **either** way:
+   - Add a `LASTFM_API_KEY` environment variable to the Run scheme
+     (Product → Scheme → Edit Scheme → Run → Arguments → Environment Variables), or
+   - Create `MusicSearch/Secrets.plist` with a `LASTFM_API_KEY` string entry.
+     This file is git-ignored.
+
+Without a key the app still runs and falls back to the on-device model.
 
 ## Project layout
 
