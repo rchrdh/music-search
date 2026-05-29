@@ -47,7 +47,9 @@ struct MetadataSearchService: AISearchService {
                 }
 
                 let tagsByID = await store.tagsSnapshot()
+                let languageByID = await store.languageSnapshot()
                 let wantedTags = intent.descriptiveTags
+                let targetLanguages = targetLanguageCodes(from: wantedTags)
 
                 var results: [SearchResult] = []
                 for album in albums {
@@ -55,7 +57,9 @@ struct MetadataSearchService: AISearchService {
                     if let result = score(
                         album: album,
                         albumTags: albumTags,
+                        albumLanguage: languageByID[album.id.rawValue],
                         wantedTags: wantedTags,
+                        targetLanguages: targetLanguages,
                         similarArtists: similar
                     ) {
                         results.append(result)
@@ -71,15 +75,49 @@ struct MetadataSearchService: AISearchService {
         }
     }
 
+    /// Maps language names to the ISO 639-3 codes MusicBrainz uses.
+    private static let languageCodes: [String: String] = [
+        "french": "fra", "spanish": "spa", "italian": "ita", "german": "deu",
+        "portuguese": "por", "japanese": "jpn", "english": "eng", "korean": "kor",
+        "chinese": "zho", "mandarin": "zho", "russian": "rus", "dutch": "nld",
+        "swedish": "swe", "norwegian": "nor", "danish": "dan", "polish": "pol",
+        "arabic": "ara", "hindi": "hin", "turkish": "tur", "greek": "ell",
+    ]
+
+    /// The ISO codes implied by any language words among the wanted tags.
+    private func targetLanguageCodes(from wantedTags: [String]) -> Set<String> {
+        var codes = Set<String>()
+        for tag in wantedTags {
+            for (name, code) in Self.languageCodes where tag.contains(name) {
+                codes.insert(code)
+            }
+        }
+        return codes
+    }
+
     /// Scores a single album against the intent. Returns nil below threshold.
     private func score(
         album: LibraryAlbum,
         albumTags: [String],
+        albumLanguage: String?,
         wantedTags: [String],
+        targetLanguages: Set<String>,
         similarArtists: Set<String>
     ) -> SearchResult? {
         var score = 0
         var reasons: [String] = []
+
+        // Language: if the user asked for a language and MusicBrainz has told us
+        // this album's language, trust it — match strongly, or exclude outright
+        // when it's a confirmed mismatch (the key precision win).
+        if !targetLanguages.isEmpty, let language = albumLanguage, !language.isEmpty {
+            if targetLanguages.contains(language) {
+                score += 4
+                reasons.append("Confirmed language")
+            } else {
+                return nil
+            }
+        }
 
         // Tag matches (substring either direction, so "french" matches
         // "french pop" and vice versa).
