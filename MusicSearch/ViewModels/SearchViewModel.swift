@@ -21,8 +21,8 @@ final class SearchViewModel {
     var results: [SearchResult] = []
     var progress: Double = 0
 
-    /// Whether the device is using the on-device model or the keyword fallback.
-    let usesOnDeviceModel: Bool
+    /// Which engine is backing search, for display.
+    let engine: SearchEngine
 
     private let service: AISearchService
     private var searchTask: Task<Void, Never>?
@@ -31,7 +31,7 @@ final class SearchViewModel {
 
     init(service: AISearchService = SearchServiceFactory.make()) {
         self.service = service
-        self.usesOnDeviceModel = service is FoundationModelSearchService
+        self.engine = SearchServiceFactory.engine(for: service)
     }
 
     var trimmedQuery: String {

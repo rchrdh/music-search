@@ -80,10 +80,20 @@ struct SearchView: View {
                     .buttonStyle(.plain)
                 }
 
-                Text(footnote)
+                if appModel.isEnriching {
+                    Label(
+                        "Analyzing your library… \(Int(appModel.enrichmentProgress * 100))%",
+                        systemImage: "wand.and.stars"
+                    )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .padding(.top, 8)
+                }
+
+                Text(footnote)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, appModel.isEnriching ? 0 : 8)
             }
             .padding()
         }
@@ -166,9 +176,14 @@ struct SearchView: View {
     }
 
     private var footnote: String {
-        model.usesOnDeviceModel
-            ? "Searches run privately on your device using Apple Intelligence."
-            : "On-device intelligence isn't available, so searches use keyword matching."
+        switch model.engine {
+        case .metadata:
+            return "Searches match your library against music metadata from Last.fm."
+        case .onDevice:
+            return "Searches run privately on your device using Apple Intelligence."
+        case .keyword:
+            return "Using keyword matching (no metadata key or on-device model available)."
+        }
     }
 
     // MARK: - Actions
