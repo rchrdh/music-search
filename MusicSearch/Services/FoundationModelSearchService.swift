@@ -4,19 +4,16 @@ import FoundationModels
 /// Natural-language album search powered by Apple's on-device language model.
 ///
 /// The library is evaluated in numbered batches so it fits the model's context
-/// window. Batches run with bounded concurrency and stream their matches back
-/// as they complete, so the UI fills in progressively. The model judges fuzzy
-/// requests ("albums like Brian Eno", "music in French") using its own
-/// knowledge of artists, genres, languages, and moods — and is instructed to
-/// favour precision so unrelated albums aren't returned.
+/// window, and matches stream back as each batch completes. Batches are run
+/// **one at a time**: the on-device model serializes inference, and issuing
+/// concurrent requests destabilises the Neural Engine (it surfaces as
+/// "Program Inference error"). Each batch is then re-checked by a stricter
+/// verification pass to keep precision high.
 struct FoundationModelSearchService: AISearchService {
 
     /// How many albums to include per request. Smaller batches let the model
     /// focus on fewer items at once, which improves accuracy.
     private let batchSize = 25
-
-    /// How many batches to evaluate at the same time.
-    private let maxConcurrentBatches = 3
 
     /// Minimum relevance (1...5) for a match to be surfaced. Higher is stricter.
     private let minimumRelevance = 4
@@ -39,32 +36,15 @@ struct FoundationModelSearchService: AISearchService {
                 }
                 let total = batches.count
 
-                await withTaskGroup(of: [SearchResult].self) { group in
-                    var nextIndex = 0
-
-                    // Prime the group up to the concurrency limit.
-                    for _ in 0 ..< Swift.min(maxConcurrentBatches, total) {
-                        let batch = batches[nextIndex]
-                        nextIndex += 1
-                        group.addTask { await self.matches(query: query, batch: batch) }
-                    }
-
-                    // As each batch finishes, stream its matches and start the next.
-                    var completed = 0
-                    for await batchResults in group {
-                        completed += 1
-                        continuation.yield(
-                            SearchUpdate(
-                                newResults: batchResults,
-                                progress: Double(completed) / Double(total)
-                            )
+                for (index, batch) in batches.enumerated() {
+                    if Task.isCancelled { break }
+                    let results = await matches(query: query, batch: batch)
+                    continuation.yield(
+                        SearchUpdate(
+                            newResults: results,
+                            progress: Double(index + 1) / Double(total)
                         )
-                        if nextIndex < total {
-                            let batch = batches[nextIndex]
-                            nextIndex += 1
-                            group.addTask { await self.matches(query: query, batch: batch) }
-                        }
-                    }
+                    )
                 }
 
                 continuation.finish()
@@ -74,8 +54,8 @@ struct FoundationModelSearchService: AISearchService {
         }
     }
 
-    /// Evaluates a single batch. Returns an empty array on failure so one bad
-    /// batch never sinks the whole search.
+    /// Evaluates a single batch and verifies its candidates. Returns an empty
+    /// array on failure so one bad batch never sinks the whole search.
     private func matches(query: String, batch: [LibraryAlbum]) async -> [SearchResult] {
         let list = batch.enumerated()
             .map { "\($0.offset). \($0.element.promptDescription)" }
@@ -115,26 +95,19 @@ struct FoundationModelSearchService: AISearchService {
         Return only the albums that clearly match, by their number.
         """
 
-        let candidates: [SearchResult]
-        do {
-            let session = LanguageModelSession(instructions: instructions)
-            let response = try await session.respond(
-                to: prompt,
-                generating: BatchMatches.self,
-                options: GenerationOptions(temperature: 0)
-            )
-            candidates = response.content.matches.compactMap { match in
-                guard match.number >= 0, match.number < batch.count else { return nil }
-                let relevance = Swift.max(1, Swift.min(5, match.relevance))
-                guard relevance >= minimumRelevance else { return nil }
-                return SearchResult(
-                    album: batch[match.number],
-                    relevance: relevance,
-                    reason: match.reason
-                )
-            }
-        } catch {
+        guard let output: BatchMatches = await generate(instructions: instructions, prompt: prompt) else {
             return []
+        }
+
+        let candidates = output.matches.compactMap { match -> SearchResult? in
+            guard match.number >= 0, match.number < batch.count else { return nil }
+            let relevance = Swift.max(1, Swift.min(5, match.relevance))
+            guard relevance >= minimumRelevance else { return nil }
+            return SearchResult(
+                album: batch[match.number],
+                relevance: relevance,
+                reason: match.reason
+            )
         }
 
         // Verification pass: re-check the (usually short) candidate list with a
@@ -171,21 +144,37 @@ struct FoundationModelSearchService: AISearchService {
         Reply with the numbers of only the albums that should be kept.
         """
 
-        do {
-            let session = LanguageModelSession(instructions: instructions)
-            let response = try await session.respond(
-                to: prompt,
-                generating: Verification.self,
-                options: GenerationOptions(temperature: 0)
-            )
-            let keep = Set(response.content.keep)
-            let verified = candidates.enumerated()
-                .filter { keep.contains($0.offset) }
-                .map(\.element)
-            return verified
-        } catch {
+        guard let output: Verification = await generate(instructions: instructions, prompt: prompt) else {
             return candidates
         }
+
+        let keep = Set(output.keep)
+        return candidates.enumerated()
+            .filter { keep.contains($0.offset) }
+            .map(\.element)
+    }
+
+    /// Runs one model request, retrying once on a transient inference failure
+    /// (the on-device Neural Engine occasionally fails a single call). Returns
+    /// nil if the work was cancelled or if it fails on both attempts.
+    private func generate<Content: Generable>(instructions: String, prompt: String) async -> Content? {
+        for attempt in 0 ..< 2 {
+            do {
+                let session = LanguageModelSession(instructions: instructions)
+                let response = try await session.respond(
+                    to: prompt,
+                    generating: Content.self,
+                    options: GenerationOptions(temperature: 0)
+                )
+                return response.content
+            } catch is CancellationError {
+                return nil
+            } catch {
+                if attempt == 0 { continue }
+                return nil
+            }
+        }
+        return nil
     }
 }
 
