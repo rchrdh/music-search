@@ -150,6 +150,15 @@ struct SearchView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        if model.phase != .idle {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    model.reset()
+                } label: {
+                    Label("Home", systemImage: "house")
+                }
+            }
+        }
         if model.phase == .results && !model.results.isEmpty {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
