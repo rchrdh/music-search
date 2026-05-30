@@ -12,6 +12,7 @@ actor MetadataStore {
     private struct CacheData: Codable {
         var tagsByAlbumID: [String: [String]] = [:]
         var similarByArtist: [String: [String]] = [:]
+        var languageByAlbumID: [String: String] = [:]
     }
 
     private var data = CacheData()
@@ -45,6 +46,21 @@ actor MetadataStore {
     /// A snapshot of all album tags for fast, synchronous scoring during search.
     func tagsSnapshot() -> [String: [String]] {
         data.tagsByAlbumID
+    }
+
+    func hasLanguage(forAlbumID id: String) -> Bool {
+        data.languageByAlbumID[id] != nil
+    }
+
+    /// Stores the ISO 639-3 language code (or "" to mark it as looked-up-but-unknown).
+    func setLanguage(_ language: String, forAlbumID id: String) {
+        data.languageByAlbumID[id] = language
+        persist()
+    }
+
+    /// A snapshot of all album languages for fast, synchronous scoring during search.
+    func languageSnapshot() -> [String: String] {
+        data.languageByAlbumID
     }
 
     func similarArtists(for artist: String) -> [String]? {

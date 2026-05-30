@@ -18,9 +18,12 @@ Example queries:
    MusicKit.
 2. **Load library** — your saved albums (with artist and genre metadata) are
    read from your library.
-3. **Enrich** — in the background, each album is enriched once with descriptive
-   **tags from Last.fm** (genre, mood, style, language, "instrumental", etc.)
-   and the result is cached on disk, so it's a one-time cost.
+3. **Enrich** — in the background, each album is enriched once and cached on
+   disk (a one-time cost): descriptive **tags from Last.fm** (genre, mood,
+   style, "instrumental", etc.) and its precise **release language from
+   MusicBrainz** (used for accurate language matching). MusicBrainz lookups are
+   serialized to ~1/sec per its rate limit, so the language pass is slow on a
+   large library the first time, then instant from cache.
 4. **Search** — your query is parsed into structured intent (descriptive tags
    plus any "like *artist*" references) and matched **locally** against the
    cached metadata. "Like *artist*" requests use Last.fm's similar-artists

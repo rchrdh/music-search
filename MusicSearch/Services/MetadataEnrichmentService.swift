@@ -6,48 +6,69 @@ import Foundation
 struct MetadataEnrichmentService: Sendable {
     let client: LastFMClient
     let store: MetadataStore
+    private let musicBrainz = MusicBrainzClient()
 
     private let maxConcurrent = 4
+    /// Spacing between MusicBrainz requests (it asks for ≤ 1 req/sec).
+    private let musicBrainzInterval: Duration = .seconds(1.1)
 
-    /// Enriches `albums`, reporting progress (0...1) over the albums that
-    /// actually needed fetching.
+    /// Enriches `albums`, reporting progress (0...1) over the work that actually
+    /// needs doing: Last.fm tags (fast, concurrent) then MusicBrainz languages
+    /// (slow, serialized to respect the rate limit).
     func enrich(
         _ albums: [LibraryAlbum],
         progress: @escaping @Sendable (Double) -> Void
     ) async {
-        var pending: [LibraryAlbum] = []
+        var tagsPending: [LibraryAlbum] = []
+        var languagePending: [LibraryAlbum] = []
         for album in albums {
-            let alreadyCached = await store.hasTags(forAlbumID: album.id.rawValue)
-            if !alreadyCached { pending.append(album) }
+            let hasTags = await store.hasTags(forAlbumID: album.id.rawValue)
+            if !hasTags { tagsPending.append(album) }
+            let hasLanguage = await store.hasLanguage(forAlbumID: album.id.rawValue)
+            if !hasLanguage { languagePending.append(album) }
         }
 
-        guard !pending.isEmpty else {
+        let total = tagsPending.count + languagePending.count
+        guard total > 0 else {
             progress(1)
             return
         }
 
+        var done = 0
+
+        // Phase 1: Last.fm tags, concurrently.
         await withTaskGroup(of: Void.self) { group in
             var next = 0
-            for _ in 0 ..< Swift.min(maxConcurrent, pending.count) {
-                let album = pending[next]
+            for _ in 0 ..< Swift.min(maxConcurrent, tagsPending.count) {
+                let album = tagsPending[next]
                 next += 1
-                group.addTask { await enrichOne(album) }
+                group.addTask { await fetchTags(album) }
             }
-
-            var done = 0
             for await _ in group {
                 done += 1
-                progress(Double(done) / Double(pending.count))
-                if next < pending.count {
-                    let album = pending[next]
+                progress(Double(done) / Double(total))
+                if next < tagsPending.count {
+                    let album = tagsPending[next]
                     next += 1
-                    group.addTask { await enrichOne(album) }
+                    group.addTask { await fetchTags(album) }
                 }
             }
         }
+
+        // Phase 2: MusicBrainz languages, serialized and throttled.
+        for album in languagePending {
+            if Task.isCancelled { break }
+            let language = await musicBrainz.language(artist: album.artistName, album: album.title)
+            await store.setLanguage(language ?? "", forAlbumID: album.id.rawValue)
+            done += 1
+            progress(Double(done) / Double(total))
+            try? await Task.sleep(for: musicBrainzInterval)
+        }
+
+        progress(1)
     }
 
-    private func enrichOne(_ album: LibraryAlbum) async {
+    private func fetchTags(_ album: LibraryAlbum) async {
         let tags = await client.tags(artist: album.artistName, album: album.title)
         // Store even an empty result so the album is marked as processed.
         await store.setTags(tags, forAlbumID: album.id.rawValue)
