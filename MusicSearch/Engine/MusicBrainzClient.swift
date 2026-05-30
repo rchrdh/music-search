@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Looks up a release's primary language from MusicBrainz, which records an
 /// explicit language per release (ISO 639-3, e.g. "fra", "spa", "eng"). This is
@@ -7,11 +10,13 @@ import Foundation
 /// MusicBrainz asks anonymous clients to send a descriptive User-Agent and to
 /// stay under one request per second — the enrichment service serializes these
 /// calls to respect that.
-struct MusicBrainzClient: Sendable {
+public struct MusicBrainzClient: Sendable {
     private let userAgent = "MusicSearch/1.0 ( https://github.com/rchrdh/music-search )"
 
+    public init() {}
+
     /// The release language as an ISO 639-3 code, or nil if not found.
-    func language(artist: String, album: String) async -> String? {
+    public func language(artist: String, album: String) async -> String? {
         guard var components = URLComponents(string: "https://musicbrainz.org/ws/2/release/") else {
             return nil
         }

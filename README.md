@@ -43,6 +43,22 @@ The app picks the best available engine automatically:
   recalling facts like an album's language.
 - **Keyword** — final fallback when neither is available.
 
+## Refining recommendations off-device (`musicsearch-eval`)
+
+The matching engine lives in `MusicSearch/Engine/` — platform-agnostic Swift
+shared by the app and a command-line harness. The harness (`eval/`, built via the
+root `Package.swift`) runs the same engine against a JSON album list so search
+quality can be tuned without a device or Xcode rebuild. Export your library from
+the app's start screen, then:
+
+```sh
+export LASTFM_API_KEY=your_key_here
+swift run musicsearch-eval "Music in French" --albums library-export.json --language
+swift test   # offline scorer unit tests
+```
+
+See `eval/README.md` for details.
+
 ## Last.fm setup (for metadata search)
 
 1. Get a free API key: https://www.last.fm/api/account/create

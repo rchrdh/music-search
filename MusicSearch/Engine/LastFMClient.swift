@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Minimal Last.fm API client for the metadata we need: descriptive tags for an
 /// album (or its artist), and a list of artists similar to a given one.
@@ -6,13 +9,17 @@ import Foundation
 /// Last.fm's JSON is famously loosely typed (a tag list can be an array, a
 /// single object, or an empty string), so responses are parsed defensively with
 /// `JSONSerialization` rather than `Codable`.
-struct LastFMClient: Sendable {
-    let apiKey: String
+public struct LastFMClient: Sendable {
+    public let apiKey: String
     private let base = URL(string: "https://ws.audioscrobbler.com/2.0/")!
+
+    public init(apiKey: String) {
+        self.apiKey = apiKey
+    }
 
     /// Up to `limit` lowercased tags describing an album. Falls back to the
     /// artist's top tags when the album isn't found.
-    func tags(artist: String, album: String, limit: Int = 8) async -> [String] {
+    public func tags(artist: String, album: String, limit: Int = 8) async -> [String] {
         let albumTags = await names(
             method: "album.getinfo",
             extra: ["artist": artist, "album": album],
@@ -30,7 +37,7 @@ struct LastFMClient: Sendable {
     }
 
     /// Lowercased names of artists Last.fm considers similar to `artist`.
-    func similarArtists(to artist: String, limit: Int = 50) async -> [String] {
+    public func similarArtists(to artist: String, limit: Int = 50) async -> [String] {
         let names = await names(
             method: "artist.getsimilar",
             extra: ["artist": artist, "limit": String(limit)],
