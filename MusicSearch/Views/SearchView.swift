@@ -9,6 +9,7 @@ struct SearchView: View {
     @State private var showCreatePlaylist = false
     @State private var playlistName = ""
     @State private var statusMessage: String?
+    @State private var exportURL: URL?
 
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
     private let suggestions = [
@@ -94,8 +95,17 @@ struct SearchView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .padding(.top, appModel.isEnriching ? 0 : 8)
+
+                if let exportURL {
+                    ShareLink("Export library (JSON)", item: exportURL)
+                        .font(.footnote)
+                        .padding(.top, 4)
+                }
             }
             .padding()
+        }
+        .task(id: appModel.albums.count) {
+            exportURL = try? LibraryExporter.writeJSON(appModel.albums)
         }
     }
 

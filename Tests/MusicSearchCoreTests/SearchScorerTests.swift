@@ -1,0 +1,84 @@
+import XCTest
+@testable import MusicSearchCore
+
+final class SearchScorerTests: XCTestCase {
+
+    func testTagMatchScores() {
+        let score = SearchScorer.score(
+            artist: "Enya",
+            albumTags: ["new age", "celtic"],
+            albumLanguage: nil,
+            wantedTags: ["new age"],
+            targetLanguages: [],
+            similarArtists: []
+        )
+        XCTAssertNotNil(score)
+        XCTAssertEqual(score?.value, 2)
+    }
+
+    func testConfirmedLanguageMatchesStrongly() {
+        let score = SearchScorer.score(
+            artist: "Françoise Hardy",
+            albumTags: [],
+            albumLanguage: "fra",
+            wantedTags: ["french"],
+            targetLanguages: ["fra"],
+            similarArtists: []
+        )
+        XCTAssertEqual(score?.value, 4)
+    }
+
+    func testConfirmedWrongLanguageIsExcluded() {
+        // English album in a French search must be dropped even if it has tags.
+        let score = SearchScorer.score(
+            artist: "Radiohead",
+            albumTags: ["french"], // mistagged
+            albumLanguage: "eng",
+            wantedTags: ["french"],
+            targetLanguages: ["fra"],
+            similarArtists: []
+        )
+        XCTAssertNil(score)
+    }
+
+    func testUnknownLanguageFallsBackToTags() {
+        let score = SearchScorer.score(
+            artist: "Air",
+            albumTags: ["french", "electronic"],
+            albumLanguage: "", // looked up, unknown
+            wantedTags: ["french"],
+            targetLanguages: ["fra"],
+            similarArtists: []
+        )
+        XCTAssertEqual(score?.value, 2)
+    }
+
+    func testSimilarArtistScores() {
+        let score = SearchScorer.score(
+            artist: "Harold Budd",
+            albumTags: [],
+            albumLanguage: nil,
+            wantedTags: [],
+            targetLanguages: [],
+            similarArtists: ["harold budd", "cluster"]
+        )
+        XCTAssertEqual(score?.value, 3)
+    }
+
+    func testNoSignalReturnsNil() {
+        let score = SearchScorer.score(
+            artist: "Death",
+            albumTags: ["death metal"],
+            albumLanguage: nil,
+            wantedTags: ["new age"],
+            targetLanguages: [],
+            similarArtists: []
+        )
+        XCTAssertNil(score)
+    }
+
+    func testTargetLanguageCodesFromTags() {
+        let codes = SearchScorer.targetLanguageCodes(from: ["french pop", "ambient"])
+        XCTAssertEqual(codes, ["fra"])
+    }
+}

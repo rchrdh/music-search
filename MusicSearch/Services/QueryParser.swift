@@ -52,36 +52,12 @@ struct QueryParser: Sendable {
     // MARK: - Heuristic fallback
 
     private func heuristicParse(_ query: String) -> QueryIntent {
-        let lower = query.lowercased()
-
-        // "like X" / "similar to X" → reference artist.
-        var referenceArtists: [String] = []
-        for marker in ["like ", "similar to ", "sounds like "] {
-            if let range = lower.range(of: marker) {
-                let artist = String(query[range.upperBound...])
-                    .trimmingCharacters(in: CharacterSet(charactersIn: " .\"'"))
-                if !artist.isEmpty { referenceArtists.append(artist) }
-            }
-        }
-
-        var tags: [String] = []
-        if lower.contains("no vocal") || lower.contains("without vocal") || lower.contains("instrumental") {
-            tags.append("instrumental")
-        }
-        // Common language phrasings: "music in French", "French music".
-        for language in ["french", "spanish", "italian", "german", "portuguese", "japanese", "english"] {
-            if lower.contains(language) { tags.append(language) }
-        }
-
-        // If nothing specific was found and there's no reference artist, fall
-        // back to meaningful words as loose tags.
-        if tags.isEmpty && referenceArtists.isEmpty {
-            tags = lower
-                .split { !$0.isLetter }
-                .map(String.init)
-                .filter { $0.count > 2 && !["album", "albums", "music", "song", "songs", "that", "with", "the"].contains($0) }
-        }
-
-        return QueryIntent(descriptiveTags: tags, referenceArtists: referenceArtists)
+        // Share the engine's parser so the app and the eval harness behave
+        // identically when the on-device model isn't used.
+        let parsed = HeuristicQueryParser().parse(query)
+        return QueryIntent(
+            descriptiveTags: parsed.descriptiveTags,
+            referenceArtists: parsed.referenceArtists
+        )
     }
 }

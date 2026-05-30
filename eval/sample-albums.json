@@ -1,0 +1,14 @@
+[
+  { "id": "1", "title": "Music for Airports", "artist": "Brian Eno", "genres": ["Ambient"] },
+  { "id": "2", "title": "Discreet Music", "artist": "Brian Eno", "genres": ["Ambient"] },
+  { "id": "3", "title": "Dans mon île", "artist": "Henri Salvador", "genres": ["Chanson"] },
+  { "id": "4", "title": "Moon Safari", "artist": "Air", "genres": ["Electronic"] },
+  { "id": "5", "title": "Bonne nuit les petits", "artist": "Françoise Hardy", "genres": ["Chanson"] },
+  { "id": "6", "title": "The Köln Concert", "artist": "Keith Jarrett", "genres": ["Jazz"] },
+  { "id": "7", "title": "Selected Ambient Works 85-92", "artist": "Aphex Twin", "genres": ["Electronic"] },
+  { "id": "8", "title": "Shepherd Moons", "artist": "Enya", "genres": ["New Age"] },
+  { "id": "9", "title": "Spiritual Healing", "artist": "Death", "genres": ["Metal"] },
+  { "id": "10", "title": "OK Computer", "artist": "Radiohead", "genres": ["Alternative"] },
+  { "id": "11", "title": "Préliminaires", "artist": "Iggy Pop", "genres": ["Rock"] },
+  { "id": "12", "title": "Un Verano Sin Ti", "artist": "Bad Bunny", "genres": ["Reggaeton"] }
+]
