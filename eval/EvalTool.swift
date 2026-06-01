@@ -54,10 +54,12 @@ struct EvalTool {
         if !targetLanguages.isEmpty { print("  target languages: \(targetLanguages.sorted())") }
         print("Albums: \(albums.count)\n")
 
-        // Similar artists for "like X" requests.
+        // Similar artists for "like X" requests. The referenced artists
+        // themselves are tracked separately so the scorer can exclude their
+        // own albums (an Eno album isn't "like Eno", it *is* Eno).
+        let referenceArtists = Set(parsed.referenceArtists.map { $0.lowercased() })
         var similar = Set<String>()
         for artist in parsed.referenceArtists {
-            similar.insert(artist.lowercased())
             similar.formUnion(await lastFM.similarArtists(to: artist))
         }
 
@@ -84,7 +86,8 @@ struct EvalTool {
                 albumLanguage: languageByID[album.id],
                 wantedTags: parsed.descriptiveTags,
                 targetLanguages: targetLanguages,
-                similarArtists: similar
+                similarArtists: similar,
+                referenceArtists: referenceArtists
             )
             if let score {
                 matches.append((album, score))

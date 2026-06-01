@@ -65,6 +65,21 @@ final class SearchScorerTests: XCTestCase {
         XCTAssertEqual(score?.value, 3)
     }
 
+    func testReferenceArtistOwnAlbumsAreExcluded() {
+        // "Albums like Brian Eno" must not return Brian Eno's own albums,
+        // even though the artist is (self-)present in the similar set.
+        let score = SearchScorer.score(
+            artist: "Brian Eno",
+            albumTags: ["ambient"],
+            albumLanguage: nil,
+            wantedTags: [],
+            targetLanguages: [],
+            similarArtists: ["brian eno", "cluster"],
+            referenceArtists: ["brian eno"]
+        )
+        XCTAssertNil(score)
+    }
+
     func testNoSignalReturnsNil() {
         let score = SearchScorer.score(
             artist: "Death",

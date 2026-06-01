@@ -25,10 +25,10 @@ struct MetadataSearchService: AISearchService {
 
                 // Resolve the set of artists that count as "similar" for any
                 // referenced artist, caching the lookups.
+                let referenceArtists = Set(intent.referenceArtists.map { $0.lowercased() })
                 var similar = Set<String>()
                 for artist in intent.referenceArtists {
                     let key = artist.lowercased()
-                    similar.insert(key)
                     if let cached = await store.similarArtists(for: key) {
                         similar.formUnion(cached)
                     } else {
@@ -57,7 +57,8 @@ struct MetadataSearchService: AISearchService {
                         albumLanguage: languageByID[album.id.rawValue],
                         wantedTags: wantedTags,
                         targetLanguages: targetLanguages,
-                        similarArtists: similar
+                        similarArtists: similar,
+                        referenceArtists: referenceArtists
                     ) {
                         results.append(
                             SearchResult(album: album, relevance: score.value, reason: score.reason)

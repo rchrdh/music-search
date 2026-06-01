@@ -42,10 +42,18 @@ public enum SearchScorer {
         wantedTags: [String],
         targetLanguages: Set<String>,
         similarArtists: Set<String>,
+        referenceArtists: Set<String> = [],
         threshold: Int = defaultThreshold
     ) -> Score? {
         var score = 0
         var reasons: [String] = []
+
+        // "Albums like X" means *other* artists: an album by a referenced
+        // artist isn't a recommendation, it's the artist itself. Exclude it
+        // outright so it never crowds out genuine similar-artist results.
+        if referenceArtists.contains(artist.lowercased()) {
+            return nil
+        }
 
         // Language: when the user asked for a language and MusicBrainz knows
         // this album's language, trust it — match strongly, or exclude outright
