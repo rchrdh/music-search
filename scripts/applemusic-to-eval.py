@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Convert an Apple Music / iTunes library export into the eval tool's JSON.
+
+Apple's Music app (macOS) exports a plist XML via:
+    File > Library > Export Library…   ->   Library.xml
+
+That file is track-level; the eval harness wants album-level entries:
+    { "id", "title" (album), "artist", "genres" }
+
+Usage:
+    python3 scripts/applemusic-to-eval.py ~/Music/Library.xml > my-library.json
+    swift run musicsearch-eval "Albums that are like Brian Eno" --albums my-library.json
+"""
+import json
+import plistlib
+import sys
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+
+    with open(sys.argv[1], "rb") as f:
+        library = plistlib.load(f)
+
+    tracks = library.get("Tracks", {})
+    albums: dict[tuple[str, str], dict] = {}
+
+    for track in tracks.values():
+        album = (track.get("Album") or "").strip()
+        # Prefer the album artist so compilations/multi-disc sets collapse.
+        artist = (track.get("Album Artist") or track.get("Artist") or "").strip()
+        if not album or not artist:
+            continue  # singles / metadata-less items aren't useful here
+
+        key = (artist.lower(), album.lower())
+        entry = albums.setdefault(key, {"title": album, "artist": artist, "genres": []})
+        genre = (track.get("Genre") or "").strip()
+        if genre and genre not in entry["genres"]:
+            entry["genres"].append(genre)
+
+    out = []
+    for i, entry in enumerate(sorted(albums.values(), key=lambda e: (e["artist"], e["title"])), 1):
+        out.append({"id": str(i), "title": entry["title"], "artist": entry["artist"], "genres": entry["genres"]})
+
+    json.dump(out, sys.stdout, ensure_ascii=False, indent=2)
+    print(f"\n# {len(out)} albums", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
