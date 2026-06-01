@@ -5,7 +5,8 @@ import Foundation
 /// Provide a Last.fm API key in either of two ways:
 /// 1. A `LASTFM_API_KEY` environment variable on the Run scheme (handy for dev), or
 /// 2. A `Secrets.plist` file in the app target containing a `LASTFM_API_KEY`
-///    string. `Secrets.plist` is git-ignored.
+///    string. `Secrets.plist` is git-ignored; copy `Secrets.example.plist`
+///    to `Secrets.plist` and fill in your key.
 ///
 /// Get a free key at https://www.last.fm/api/account/create
 enum Secrets {

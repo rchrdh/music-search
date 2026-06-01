@@ -14,7 +14,22 @@ SWIFT_RELEASE="swift-6.0.3-RELEASE"
 SWIFT_DIR="/opt/${SWIFT_RELEASE}-ubuntu24.04"
 
 echo "Installing Swift toolchain dependencies…"
-apt-get update
+# Some web environments ship broken third-party APT repositories (e.g. stale
+# launchpad PPAs that return 403), which makes `apt-get update` exit non-zero
+# and abort this script under `set -e`. We only need the base Ubuntu archive, so
+# if the update fails, disable any non-Ubuntu source files and retry.
+if ! apt-get update; then
+  echo "apt-get update failed; disabling third-party APT sources and retrying…"
+  mkdir -p /etc/apt/disabled-sources.d
+  shopt -s nullglob
+  for src in /etc/apt/sources.list.d/*; do
+    case "$(basename "$src")" in
+      ubuntu.sources|ubuntu.list) ;;            # keep the base Ubuntu archive
+      *) mv "$src" /etc/apt/disabled-sources.d/ ;;
+    esac
+  done
+  apt-get update
+fi
 apt-get install -y --no-install-recommends \
   binutils git curl ca-certificates \
   libc6-dev libcurl4-openssl-dev libedit2 libgcc-13-dev libpython3-dev \
