@@ -6,7 +6,7 @@ import PackageDescription
 // recommendation quality off-device. It is independent of the Xcode app project.
 let package = Package(
     name: "MusicSearchCore",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
         .library(name: "MusicSearchCore", targets: ["MusicSearchCore"]),
         .executable(name: "musicsearch-eval", targets: ["musicsearch-eval"]),
