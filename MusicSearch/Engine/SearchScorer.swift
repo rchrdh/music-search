@@ -70,11 +70,9 @@ public enum SearchScorer {
         // Tag matches (substring either direction, so "french" matches
         // "french pop" and vice versa).
         var matchedTags: [String] = []
-        for wanted in wantedTags {
-            if albumTags.contains(where: { $0.contains(wanted) || wanted.contains($0) }) {
-                score += 2
-                matchedTags.append(wanted)
-            }
+        for wanted in wantedTags where tagMatches(wanted, in: albumTags) {
+            score += 2
+            matchedTags.append(wanted)
         }
         if !matchedTags.isEmpty {
             reasons.append("Tagged \(matchedTags.joined(separator: ", "))")
@@ -88,5 +86,29 @@ public enum SearchScorer {
 
         guard score >= threshold else { return nil }
         return Score(value: Swift.min(5, score), reason: reasons.joined(separator: " · "))
+    }
+
+    /// Whether an album has any signal *other than* a confirmed language — i.e. a
+    /// descriptive-tag match or a similar-artist match (and isn't the referenced
+    /// artist itself). Lets a caller cheaply decide which albums are worth an
+    /// expensive language lookup before paying for one, instead of resolving
+    /// language across an entire library.
+    public static func hasNonLanguageSignal(
+        artist: String,
+        albumTags: [String],
+        wantedTags: [String],
+        similarArtists: Set<String>,
+        referenceArtists: Set<String> = []
+    ) -> Bool {
+        let key = artist.lowercased()
+        if referenceArtists.contains(key) { return false }
+        if similarArtists.contains(key) { return true }
+        return wantedTags.contains { tagMatches($0, in: albumTags) }
+    }
+
+    /// Substring match in either direction, so "french" matches "french pop"
+    /// and "ambient" matches "dark ambient".
+    private static func tagMatches(_ wanted: String, in albumTags: [String]) -> Bool {
+        albumTags.contains { $0.contains(wanted) || wanted.contains($0) }
     }
 }
