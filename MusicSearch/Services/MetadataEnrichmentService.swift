@@ -3,66 +3,53 @@ import Foundation
 /// Fetches Last.fm tags for every album not already cached, with bounded
 /// concurrency, and stores them. Safe to call on every library load — it only
 /// does network work for albums it hasn't seen before.
+///
+/// Language is deliberately *not* enriched here. MusicBrainz serves languages at
+/// ~1 request/sec, so resolving a whole library up front would take many minutes
+/// (and most albums are never the subject of a language query). Instead
+/// `MetadataSearchService` resolves language lazily at query time — only for the
+/// albums a language query actually shortlists — and caches the result.
 struct MetadataEnrichmentService: Sendable {
     let client: LastFMClient
     let store: MetadataStore
-    private let musicBrainz = MusicBrainzClient()
 
     private let maxConcurrent = 4
-    /// Spacing between MusicBrainz requests (it asks for ≤ 1 req/sec).
-    private let musicBrainzInterval: Duration = .seconds(1.1)
 
-    /// Enriches `albums`, reporting progress (0...1) over the work that actually
-    /// needs doing: Last.fm tags (fast, concurrent) then MusicBrainz languages
-    /// (slow, serialized to respect the rate limit).
+    /// Enriches `albums` with Last.fm tags (fast, concurrent), reporting progress
+    /// (0...1) over the albums that still need fetching.
     func enrich(
         _ albums: [LibraryAlbum],
         progress: @escaping @Sendable (Double) -> Void
     ) async {
-        var tagsPending: [LibraryAlbum] = []
-        var languagePending: [LibraryAlbum] = []
+        var pending: [LibraryAlbum] = []
         for album in albums {
-            let hasTags = await store.hasTags(forAlbumID: album.id.rawValue)
-            if !hasTags { tagsPending.append(album) }
-            let hasLanguage = await store.hasLanguage(forAlbumID: album.id.rawValue)
-            if !hasLanguage { languagePending.append(album) }
+            if await store.hasTags(forAlbumID: album.id.rawValue) { continue }
+            pending.append(album)
         }
 
-        let total = tagsPending.count + languagePending.count
+        let total = pending.count
         guard total > 0 else {
             progress(1)
             return
         }
 
         var done = 0
-
-        // Phase 1: Last.fm tags, concurrently.
         await withTaskGroup(of: Void.self) { group in
             var next = 0
-            for _ in 0 ..< Swift.min(maxConcurrent, tagsPending.count) {
-                let album = tagsPending[next]
+            for _ in 0 ..< Swift.min(maxConcurrent, pending.count) {
+                let album = pending[next]
                 next += 1
                 group.addTask { await fetchTags(album) }
             }
             for await _ in group {
                 done += 1
                 progress(Double(done) / Double(total))
-                if next < tagsPending.count {
-                    let album = tagsPending[next]
+                if next < pending.count {
+                    let album = pending[next]
                     next += 1
                     group.addTask { await fetchTags(album) }
                 }
             }
-        }
-
-        // Phase 2: MusicBrainz languages, serialized and throttled.
-        for album in languagePending {
-            if Task.isCancelled { break }
-            let language = await musicBrainz.language(artist: album.artistName, album: album.title)
-            await store.setLanguage(language ?? "", forAlbumID: album.id.rawValue)
-            done += 1
-            progress(Double(done) / Double(total))
-            try? await Task.sleep(for: musicBrainzInterval)
         }
 
         progress(1)

@@ -9,6 +9,9 @@ struct MetadataSearchService: AISearchService {
     let client: LastFMClient
     let store: MetadataStore
     private let parser = QueryParser()
+    private let musicBrainz = MusicBrainzClient()
+    /// MusicBrainz asks anonymous clients to stay under one request per second.
+    private let musicBrainzInterval: Duration = .seconds(1.1)
 
     init(client: LastFMClient, store: MetadataStore = .shared) {
         self.client = client
@@ -44,9 +47,48 @@ struct MetadataSearchService: AISearchService {
                 }
 
                 let tagsByID = await store.tagsSnapshot()
-                let languageByID = await store.languageSnapshot()
                 let wantedTags = intent.descriptiveTags
                 let targetLanguages = SearchScorer.targetLanguageCodes(from: wantedTags)
+
+                // Language is the expensive signal (MusicBrainz, ~1/sec). Resolve
+                // it lazily and only for the albums *this* query shortlists — those
+                // with a cheap tag/similar signal — instead of pre-enriching the
+                // whole library. Results are cached, so later queries are instant.
+                if !targetLanguages.isEmpty {
+                    var candidates: [LibraryAlbum] = []
+                    for album in albums {
+                        let id = album.id.rawValue
+                        if await store.hasLanguage(forAlbumID: id) { continue }
+                        if SearchScorer.hasNonLanguageSignal(
+                            artist: album.artistName,
+                            albumTags: tagsByID[id] ?? [],
+                            wantedTags: wantedTags,
+                            similarArtists: similar,
+                            referenceArtists: referenceArtists
+                        ) {
+                            candidates.append(album)
+                        }
+                    }
+                    for (index, album) in candidates.enumerated() {
+                        if Task.isCancelled {
+                            continuation.finish()
+                            return
+                        }
+                        let language = await musicBrainz.language(artist: album.artistName, album: album.title)
+                        await store.setLanguage(language ?? "", forAlbumID: album.id.rawValue)
+                        continuation.yield(SearchUpdate(newResults: [], progress: Double(index + 1) / Double(candidates.count)))
+                        if index < candidates.count - 1 {
+                            try? await Task.sleep(for: musicBrainzInterval)
+                        }
+                    }
+                }
+
+                if Task.isCancelled {
+                    continuation.finish()
+                    return
+                }
+
+                let languageByID = await store.languageSnapshot()
 
                 var results: [SearchResult] = []
                 for album in albums {
