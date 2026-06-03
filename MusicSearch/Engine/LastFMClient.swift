@@ -46,6 +46,26 @@ public struct LastFMClient: Sendable {
         return names.map { $0.lowercased() }
     }
 
+    /// Whether Last.fm responds at all. Any HTTP reply — even an API error or a
+    /// rate-limit — counts as reachable; only a transport failure (no network,
+    /// DNS, host down) returns false. Lets callers fail loudly when the service
+    /// the app depends on is unreachable, instead of silently returning nothing.
+    public func isReachable() async -> Bool {
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return false }
+        components.queryItems = [
+            URLQueryItem(name: "method", value: "chart.gettoptags"),
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "format", value: "json"),
+        ]
+        guard let url = components.url else { return false }
+        do {
+            _ = try await URLSession.shared.data(from: url)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - Request / parsing
 
     private func names(method: String, extra: [String: String], path: [String]) async -> [String] {

@@ -27,23 +27,33 @@ enum SearchEngine {
     case keyword
 }
 
-/// Chooses the best available search implementation. Prefers metadata-based
-/// search (most accurate) when a Last.fm key is configured, then the on-device
-/// model, then a keyword fallback.
+/// Errors surfaced when metadata search can't run. Search is metadata-only, so
+/// rather than silently degrading we report these to the user.
+enum SearchError: LocalizedError {
+    case noAPIKey
+    case lastFMUnreachable
+
+    var errorDescription: String? {
+        switch self {
+        case .noAPIKey:
+            return "No Last.fm API key configured. Add one in Secrets.plist (or the Run scheme) to enable search."
+        case .lastFMUnreachable:
+            return "Can't reach Last.fm. Check your connection and try again."
+        }
+    }
+}
+
+/// Builds the search service. Search is **metadata-only** (Last.fm): the
+/// on-device model is intentionally not used to *generate* results — it only
+/// powers query understanding in `QueryParser`. When no key is configured or
+/// Last.fm can't be reached, search surfaces a `SearchError` rather than
+/// silently falling back to a weaker engine.
 enum SearchServiceFactory {
     static func make() -> AISearchService {
-        if let key = Secrets.lastFMAPIKey {
-            return MetadataSearchService(client: LastFMClient(apiKey: key))
-        }
-        if FoundationModelSearchService.isAvailable {
-            return FoundationModelSearchService()
-        }
-        return LocalSearchService()
+        MetadataSearchService(client: LastFMClient(apiKey: Secrets.lastFMAPIKey ?? ""))
     }
 
     static func engine(for service: AISearchService) -> SearchEngine {
-        if service is MetadataSearchService { return .metadata }
-        if service is FoundationModelSearchService { return .onDevice }
-        return .keyword
+        .metadata
     }
 }
