@@ -65,6 +65,21 @@ final class SearchScorerTests: XCTestCase {
         XCTAssertEqual(score?.value, 3)
     }
 
+    func testReferenceArtistOwnAlbumsAreExcluded() {
+        // "Albums like Brian Eno" must not return Brian Eno's own albums,
+        // even though the artist is (self-)present in the similar set.
+        let score = SearchScorer.score(
+            artist: "Brian Eno",
+            albumTags: ["ambient"],
+            albumLanguage: nil,
+            wantedTags: [],
+            targetLanguages: [],
+            similarArtists: ["brian eno", "cluster"],
+            referenceArtists: ["brian eno"]
+        )
+        XCTAssertNil(score)
+    }
+
     func testNoSignalReturnsNil() {
         let score = SearchScorer.score(
             artist: "Death",
@@ -75,6 +90,33 @@ final class SearchScorerTests: XCTestCase {
             similarArtists: []
         )
         XCTAssertNil(score)
+    }
+
+    func testNonLanguageSignalDetectsTagAndSimilar() {
+        // Tag match counts as a candidate worth a language lookup.
+        XCTAssertTrue(SearchScorer.hasNonLanguageSignal(
+            artist: "Air", albumTags: ["french", "electronic"],
+            wantedTags: ["french"], similarArtists: []
+        ))
+        // Similar-artist match counts too, even with no tag overlap.
+        XCTAssertTrue(SearchScorer.hasNonLanguageSignal(
+            artist: "Cluster", albumTags: ["krautrock"],
+            wantedTags: ["french"], similarArtists: ["cluster"]
+        ))
+    }
+
+    func testNonLanguageSignalRejectsBareAndReferenceArtist() {
+        // No tag, not similar → not worth a lookup.
+        XCTAssertFalse(SearchScorer.hasNonLanguageSignal(
+            artist: "Metallica", albumTags: ["metal"],
+            wantedTags: ["french"], similarArtists: []
+        ))
+        // The referenced artist itself is never a candidate (it's excluded).
+        XCTAssertFalse(SearchScorer.hasNonLanguageSignal(
+            artist: "Brian Eno", albumTags: ["ambient"],
+            wantedTags: ["ambient"], similarArtists: ["brian eno"],
+            referenceArtists: ["brian eno"]
+        ))
     }
 
     func testTargetLanguageCodesFromTags() {

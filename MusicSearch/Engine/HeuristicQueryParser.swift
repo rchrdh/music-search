@@ -27,13 +27,23 @@ public struct HeuristicQueryParser: Sendable {
             if lower.contains(language) { tags.append(language) }
         }
 
-        // Fall back to meaningful words when nothing specific was found.
-        if tags.isEmpty && referenceArtists.isEmpty {
-            let stopWords: Set<String> = ["album", "albums", "music", "song", "songs", "that", "with", "the"]
-            tags = lower
-                .split { !$0.isLetter }
-                .map(String.init)
-                .filter { $0.count > 2 && !stopWords.contains($0) }
+        // Pull descriptive genre/style words out of the query too. When there's
+        // a "like X" clause, only scan the text *before* it, so the referenced
+        // artist's name isn't mistaken for a tag ("funk albums like Funkadelic"
+        // → tag "funk", reference "Funkadelic"). This runs alongside any
+        // reference artist, not just when nothing else was found.
+        let descriptivePart: Substring
+        if let markerStart = ["like ", "similar to ", "sounds like "]
+            .compactMap({ lower.range(of: $0)?.lowerBound })
+            .min() {
+            descriptivePart = lower[..<markerStart]
+        } else {
+            descriptivePart = lower[...]
+        }
+        let stopWords: Set<String> = ["album", "albums", "music", "song", "songs", "that", "with", "the"]
+        for word in descriptivePart.split(whereSeparator: { !$0.isLetter }).map(String.init)
+        where word.count > 2 && !stopWords.contains(word) && !tags.contains(word) {
+            tags.append(word)
         }
 
         return ParsedQuery(descriptiveTags: tags, referenceArtists: referenceArtists)

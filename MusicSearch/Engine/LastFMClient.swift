@@ -60,9 +60,45 @@ public struct LastFMClient: Sendable {
         components.queryItems = items
         guard let url = components.url else { return [] }
 
-        guard let data = try? await URLSession.shared.data(from: url).0 else { return [] }
-        return extractNames(from: data, path: path)
+        // Last.fm throttles bursts with HTTP 429 / `error: 29`. Without backoff a
+        // throttled response looks identical to "no data" and silently drops the
+        // album's tags — so retry a few times with exponential backoff before
+        // giving up. A genuine empty (non-throttled) result returns immediately.
+        for attempt in 0 ..< maxAttempts {
+            guard let (data, response) = try? await URLSession.shared.data(from: url) else {
+                await backoff(attempt)
+                continue
+            }
+            if Self.isRateLimited(statusCode: (response as? HTTPURLResponse)?.statusCode, body: data) {
+                await backoff(attempt)
+                continue
+            }
+            return extractNames(from: data, path: path)
+        }
+        return []
     }
+
+    private let maxAttempts = 5
+
+    /// True when the response is a Last.fm rate-limit signal (HTTP 429 or the
+    /// API's `error: 29`), as opposed to a normal — possibly empty — payload.
+    static func isRateLimited(statusCode: Int?, body: Data) -> Bool {
+        if statusCode == 429 { return true }
+        if let root = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+           (root["error"] as? Int) == 29 {
+            return true
+        }
+        return false
+    }
+
+    /// Exponential backoff: ~0.5s, 1s, 2s, 4s … with a little jitter so the five
+    /// concurrent fetchers don't retry in lockstep.
+    private func backoff(_ attempt: Int) async {
+        let base = 0.5 * pow(2.0, Double(attempt))
+        let seconds = base + Double.random(in: 0 ... 0.25)
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
 
     private func extractNames(from data: Data, path: [String], leaf: String = "name") -> [String] {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }

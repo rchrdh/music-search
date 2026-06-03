@@ -54,10 +54,12 @@ struct EvalTool {
         if !targetLanguages.isEmpty { print("  target languages: \(targetLanguages.sorted())") }
         print("Albums: \(albums.count)\n")
 
-        // Similar artists for "like X" requests.
+        // Similar artists for "like X" requests. The referenced artists
+        // themselves are tracked separately so the scorer can exclude their
+        // own albums (an Eno album isn't "like Eno", it *is* Eno).
+        let referenceArtists = Set(parsed.referenceArtists.map { $0.lowercased() })
         var similar = Set<String>()
         for artist in parsed.referenceArtists {
-            similar.insert(artist.lowercased())
             similar.formUnion(await lastFM.similarArtists(to: artist))
         }
 
@@ -65,10 +67,28 @@ struct EvalTool {
         let tagsByID = await fetchTags(for: albums, using: lastFM)
 
         // Language, only when needed and requested (serialized for MusicBrainz).
+        // Candidate narrowing: language is the expensive signal (~1/sec), so
+        // resolve it only for albums that already pass a cheap pre-filter — a
+        // tag or similar-artist match — rather than the whole library. This is
+        // how a real app should work: narrow with cheap signals, then confirm or
+        // exclude the shortlist with the costly lookup. Trade-off: an album
+        // identifiable *only* by its confirmed language (no matching tag, not a
+        // similar artist) won't be promoted, since we never look it up — but such
+        // albums almost always carry a language/scene tag, so the recall cost is
+        // small and the speed win is large.
         var languageByID: [String: String] = [:]
         if useLanguage && !targetLanguages.isEmpty {
-            print("Fetching languages from MusicBrainz (~1/sec)…\n")
-            for album in albums {
+            let candidates = albums.filter {
+                SearchScorer.hasNonLanguageSignal(
+                    artist: $0.artist,
+                    albumTags: tagsByID[$0.id] ?? [],
+                    wantedTags: parsed.descriptiveTags,
+                    similarArtists: similar,
+                    referenceArtists: referenceArtists
+                )
+            }
+            print("Resolving language for \(candidates.count) candidate(s) of \(albums.count) via MusicBrainz (~1/sec)…\n")
+            for album in candidates {
                 languageByID[album.id] = await musicBrainz.language(artist: album.artist, album: album.title) ?? ""
                 try? await Task.sleep(for: .seconds(1.1))
             }
@@ -84,7 +104,8 @@ struct EvalTool {
                 albumLanguage: languageByID[album.id],
                 wantedTags: parsed.descriptiveTags,
                 targetLanguages: targetLanguages,
-                similarArtists: similar
+                similarArtists: similar,
+                referenceArtists: referenceArtists
             )
             if let score {
                 matches.append((album, score))
