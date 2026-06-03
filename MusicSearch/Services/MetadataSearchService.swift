@@ -24,6 +24,18 @@ struct MetadataSearchService: AISearchService {
     ) -> AsyncThrowingStream<SearchUpdate, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                // Metadata search is the only engine: fail loudly rather than
+                // degrade. No key, or Last.fm unreachable, is a hard error.
+                guard !client.apiKey.isEmpty else {
+                    continuation.finish(throwing: SearchError.noAPIKey)
+                    return
+                }
+                let reachable = await client.isReachable()
+                if !reachable {
+                    continuation.finish(throwing: SearchError.lastFMUnreachable)
+                    return
+                }
+
                 let intent = await parser.parse(query)
 
                 // Resolve the set of artists that count as "similar" for any
