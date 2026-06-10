@@ -46,6 +46,11 @@
       "query": "Jazz albums",
       "expected": ["6", "35", "36"],
       "forbidden": ["37", "42"]
+    },
+    {
+      "query": "Calm soothing soundscapes",
+      "expected": ["1", "2", "7", "14", "15", "16", "17", "19", "20", "21", "23", "24", "27", "28", "29"],
+      "forbidden": ["37", "39", "42"]
     }
   ]
 }

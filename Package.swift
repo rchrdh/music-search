@@ -20,7 +20,7 @@ let package = Package(
             name: "musicsearch-eval",
             dependencies: ["MusicSearchCore"],
             path: "eval",
-            exclude: ["README.md", "sample-albums.json", "fixtures.json", "judgments.json"]
+            exclude: ["README.md", "sample-albums.json", "fixtures.json", "judgments.json", "embeddings.json"]
         ),
         .testTarget(
             name: "MusicSearchCoreTests",
