@@ -25,10 +25,13 @@ Example queries:
    serialized to ~1/sec per its rate limit, so the language pass is slow on a
    large library the first time, then instant from cache.
 4. **Search** — your query is parsed into structured intent (descriptive tags
-   plus any "like *artist*" references) and matched **locally** against the
-   cached metadata. "Like *artist*" requests use Last.fm's similar-artists
-   endpoint. This is accurate (grounded in real metadata) and fast (no
-   per-album model calls at search time).
+   plus any "like *artist*" references). The on-device model is shown the tag
+   vocabulary that actually occurs in your library and translates the request
+   into it ("chill, no singing" → `chillout`, `downtempo`, `instrumental`), and
+   matching is then **exact and local** against the cached metadata. "Like
+   *artist*" requests use Last.fm's similar-artists endpoint. This is accurate
+   (grounded in real metadata) and fast (no per-album model calls at search
+   time).
 5. **Results** — matches appear in a grid with a short reason for each. Tap an
    album to play it, or create an Apple Music playlist from all results.
 
@@ -48,13 +51,16 @@ The app picks the best available engine automatically:
 The matching engine lives in `MusicSearch/Engine/` — platform-agnostic Swift
 shared by the app and a command-line harness. The harness (`eval/`, built via the
 root `Package.swift`) runs the same engine against a JSON album list so search
-quality can be tuned without a device or Xcode rebuild. Export your library from
-the app's start screen, then:
+quality can be tuned without a device or Xcode rebuild — and, crucially,
+**measured**: a labeled judgments suite reports precision/recall/F1/NDCG per
+query, offline and deterministically.
 
 ```sh
+swift run musicsearch-eval --judgments eval/judgments.json   # the metrics suite (offline)
+
 export LASTFM_API_KEY=your_key_here
 swift run musicsearch-eval "Music in French" --albums library-export.json --language
-swift test   # offline scorer unit tests
+swift test   # offline scorer/grounding/metrics unit tests
 ```
 
 See `eval/README.md` for details.

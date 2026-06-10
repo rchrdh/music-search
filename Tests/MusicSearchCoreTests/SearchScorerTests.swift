@@ -119,6 +119,35 @@ final class SearchScorerTests: XCTestCase {
         ))
     }
 
+    func testExactMatchingRequiresEquality() {
+        // Under .exact, "french" must NOT match "french pop" — grounding has
+        // already expanded the query into the precise vocabulary tags it wants.
+        let score = SearchScorer.score(
+            artist: "Stromae",
+            albumTags: ["french pop", "electronic"],
+            albumLanguage: nil,
+            wantedTags: ["french"],
+            targetLanguages: [],
+            similarArtists: [],
+            tagMatching: .exact
+        )
+        XCTAssertNil(score)
+    }
+
+    func testExactMatchingScoresGroundedTags() {
+        // The grounded query carries both vocabulary tags; each exact hit scores.
+        let score = SearchScorer.score(
+            artist: "Stromae",
+            albumTags: ["french pop", "french", "electronic"],
+            albumLanguage: nil,
+            wantedTags: ["french", "french pop"],
+            targetLanguages: [],
+            similarArtists: [],
+            tagMatching: .exact
+        )
+        XCTAssertEqual(score?.value, 4)
+    }
+
     func testTargetLanguageCodesFromTags() {
         let codes = SearchScorer.targetLanguageCodes(from: ["french pop", "ambient"])
         XCTAssertEqual(codes, ["fra"])

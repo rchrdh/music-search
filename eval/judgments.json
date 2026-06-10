@@ -1,0 +1,51 @@
+{
+  "albums": "eval/fixtures.json",
+
+  "similarArtists": {
+    "brian eno": [
+      "harold budd", "robert fripp", "cluster", "jon hassell", "david sylvian",
+      "klaus schulze", "tangerine dream", "steve roach", "biosphere",
+      "william basinski", "stars of the lid", "tim hecker", "fennesz",
+      "loscil", "oneohtrix point never", "boards of canada", "aphex twin",
+      "the orb", "popol vuh", "david bowie"
+    ]
+  },
+
+  "cases": [
+    {
+      "query": "Music in French",
+      "expected": ["3", "5", "31", "32"],
+      "forbidden": ["4", "33", "34", "10", "42"]
+    },
+    {
+      "query": "Albums that are like Brian Eno",
+      "expected": ["7", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "26", "27", "28", "29", "30", "40"],
+      "forbidden": ["1", "2", "37", "38", "42"]
+    },
+    {
+      "query": "Ambient albums",
+      "expected": ["1", "2", "7", "14", "15", "16", "17", "19", "20", "21", "23", "24", "27", "28", "29"],
+      "forbidden": ["37", "39", "42"]
+    },
+    {
+      "query": "Albums with no vocals",
+      "expected": ["1", "2", "6", "7", "13", "14", "15", "16", "17", "19", "20", "21", "22", "24", "25", "27", "28", "29", "35", "36"],
+      "forbidden": ["8", "10", "41", "42"]
+    },
+    {
+      "query": "Albums that don't have vocals",
+      "expected": ["1", "2", "6", "7", "13", "14", "15", "16", "17", "19", "20", "21", "22", "24", "25", "27", "28", "29", "35", "36"],
+      "forbidden": ["8", "10", "41", "42"]
+    },
+    {
+      "query": "New Age albums",
+      "expected": ["8", "15"],
+      "forbidden": ["9", "37"]
+    },
+    {
+      "query": "Jazz albums",
+      "expected": ["6", "35", "36"],
+      "forbidden": ["37", "42"]
+    }
+  ]
+}

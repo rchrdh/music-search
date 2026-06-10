@@ -21,7 +21,13 @@ struct MetadataSearchService: AISearchService {
     ) -> AsyncThrowingStream<SearchUpdate, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                let intent = await parser.parse(query)
+                // Parse with the library's tag vocabulary in hand, so the model
+                // can translate the request into tags that actually occur in
+                // this library instead of echoing the user's words.
+                let tagsByID = await store.tagsSnapshot()
+                let vocabulary = Set(tagsByID.values.joined())
+                let promptVocabulary = TagVocabulary.topTags(in: tagsByID.values)
+                let intent = await parser.parse(query, tagVocabulary: promptVocabulary)
 
                 // Resolve the set of artists that count as "similar" for any
                 // referenced artist, caching the lookups.
@@ -43,10 +49,12 @@ struct MetadataSearchService: AISearchService {
                     return
                 }
 
-                let tagsByID = await store.tagsSnapshot()
                 let languageByID = await store.languageSnapshot()
-                let wantedTags = intent.descriptiveTags
-                let targetLanguages = SearchScorer.targetLanguageCodes(from: wantedTags)
+                // Language codes come from the raw intent (a language word like
+                // "french" may not exist as a library tag); tag matching uses
+                // the grounded vocabulary tags, exactly.
+                let targetLanguages = SearchScorer.targetLanguageCodes(from: intent.descriptiveTags)
+                let wantedTags = TagVocabulary.ground(intent.descriptiveTags, in: vocabulary)
 
                 var results: [SearchResult] = []
                 for album in albums {
@@ -58,7 +66,8 @@ struct MetadataSearchService: AISearchService {
                         wantedTags: wantedTags,
                         targetLanguages: targetLanguages,
                         similarArtists: similar,
-                        referenceArtists: referenceArtists
+                        referenceArtists: referenceArtists,
+                        tagMatching: .exact
                     ) {
                         results.append(
                             SearchResult(album: album, relevance: score.value, reason: score.reason)

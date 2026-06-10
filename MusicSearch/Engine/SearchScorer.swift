@@ -10,6 +10,17 @@ public enum SearchScorer {
         public let reason: String
     }
 
+    /// How wanted tags are compared against an album's tags.
+    public enum TagMatching: Sendable {
+        /// Substring overlap in either direction ("french" matches "french pop").
+        /// For raw, ungrounded query words.
+        case substring
+        /// Exact equality — for wanted tags already grounded into the library's
+        /// vocabulary via `TagVocabulary.ground`, where the fuzziness has
+        /// already happened on the query side.
+        case exact
+    }
+
     /// Minimum score for an album to be considered a match.
     public static let defaultThreshold = 2
 
@@ -43,7 +54,8 @@ public enum SearchScorer {
         targetLanguages: Set<String>,
         similarArtists: Set<String>,
         referenceArtists: Set<String> = [],
-        threshold: Int = defaultThreshold
+        threshold: Int = defaultThreshold,
+        tagMatching: TagMatching = .substring
     ) -> Score? {
         var score = 0
         var reasons: [String] = []
@@ -70,7 +82,7 @@ public enum SearchScorer {
         // Tag matches (substring either direction, so "french" matches
         // "french pop" and vice versa).
         var matchedTags: [String] = []
-        for wanted in wantedTags where tagMatches(wanted, in: albumTags) {
+        for wanted in wantedTags where tagMatches(wanted, in: albumTags, mode: tagMatching) {
             score += 2
             matchedTags.append(wanted)
         }
@@ -98,17 +110,21 @@ public enum SearchScorer {
         albumTags: [String],
         wantedTags: [String],
         similarArtists: Set<String>,
-        referenceArtists: Set<String> = []
+        referenceArtists: Set<String> = [],
+        tagMatching: TagMatching = .substring
     ) -> Bool {
         let key = artist.lowercased()
         if referenceArtists.contains(key) { return false }
         if similarArtists.contains(key) { return true }
-        return wantedTags.contains { tagMatches($0, in: albumTags) }
+        return wantedTags.contains { tagMatches($0, in: albumTags, mode: tagMatching) }
     }
 
-    /// Substring match in either direction, so "french" matches "french pop"
-    /// and "ambient" matches "dark ambient".
-    private static func tagMatches(_ wanted: String, in albumTags: [String]) -> Bool {
-        albumTags.contains { $0.contains(wanted) || wanted.contains($0) }
+    private static func tagMatches(_ wanted: String, in albumTags: [String], mode: TagMatching) -> Bool {
+        switch mode {
+        case .substring:
+            return albumTags.contains { $0.contains(wanted) || wanted.contains($0) }
+        case .exact:
+            return albumTags.contains(wanted)
+        }
     }
 }
