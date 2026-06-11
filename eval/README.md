@@ -105,13 +105,17 @@ deterministically. Shipping an embedding ranker in the app would additionally
 need an on-device query encoder (`NLEmbedding.sentenceEmbedding` on Apple
 platforms); the album-side index could be precomputed exactly like this.
 
-To eval against your **real library**, export it from the app, convert
-judgments-worthy queries you care about into cases (IDs come from the export),
-and pass `--albums`:
+To eval against your **real library**, export it (from the app, or from
+Apple Music on macOS via File → Library → Export Library… plus
+`scripts/applemusic-to-eval.py` — album IDs are a stable hash of
+artist+album, so they survive re-exports), bake tags into it once, then run
+suites offline against the baked file:
 
 ```sh
-export LASTFM_API_KEY=your_key_here   # needed: exports have no baked tags
-swift run musicsearch-eval --judgments my-judgments.json --albums library-export.json
+python3 scripts/applemusic-to-eval.py ~/Music/Library.xml > my-library.json
+export LASTFM_API_KEY=your_key_here
+swift run musicsearch-eval --bake my-library-tagged.json --albums my-library.json
+swift run musicsearch-eval --judgments my-judgments.json --albums my-library-tagged.json
 ```
 
 ## Single-query mode
