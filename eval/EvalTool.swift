@@ -33,6 +33,8 @@ import FoundationNetworking
 ///
 /// Flags:
 ///   --judgments <path>   run the labeled suite at <path>
+///   --bake <out>         fetch tags for albums lacking baked ones, write the
+///                        album file back out with tags filled in
 ///   --albums <path>      JSON array of albums (default: sample set, or the
 ///                        `albums` path named inside the judgments file)
 ///   --engine <name>      metadata (default) | embedding | hybrid
@@ -67,6 +69,7 @@ struct EvalTool {
         var args = Array(CommandLine.arguments.dropFirst())
 
         let judgmentsPath = takeValue("--judgments", from: &args)
+        let bakePath = takeValue("--bake", from: &args)
         let albumsOverride = takeValue("--albums", from: &args)
         let limit = takeValue("--limit", from: &args).flatMap { Int($0) }
         let useLanguage = takeFlag("--language", from: &args)
@@ -104,6 +107,16 @@ struct EvalTool {
         let apiKey = ProcessInfo.processInfo.environment["LASTFM_API_KEY"]
         let lastFM = apiKey.flatMap { $0.isEmpty ? nil : LastFMClient(apiKey: $0) }
 
+        if let bakePath {
+            await runBake(
+                albumsPath: albumsOverride ?? "eval/sample-albums.json",
+                outPath: bakePath,
+                limit: limit,
+                lastFM: lastFM
+            )
+            return
+        }
+
         if let judgmentsPath {
             await runJudgments(
                 path: judgmentsPath,
@@ -132,6 +145,55 @@ struct EvalTool {
             verbose: verbose,
             lastFM: lastFM
         )
+    }
+
+    // MARK: - Bake mode
+
+    /// Fetches Last.fm tags for every album that lacks baked ones (via the
+    /// same client and selection the engines use) and writes the album file
+    /// back out with `tags` filled in — so later eval runs against a real
+    /// library export are offline and deterministic. Albums whose lookup
+    /// finds nothing get `tags: []`, meaning "looked up, none found".
+    private static func runBake(
+        albumsPath: String,
+        outPath: String,
+        limit: Int?,
+        lastFM: LastFMClient?
+    ) async {
+        guard var albums = loadAlbums(at: albumsPath) else { return }
+        if let limit { albums = Array(albums.prefix(limit)) }
+        let pending = albums.filter { $0.tags == nil }
+        print("Baking tags into \(outPath): \(albums.count) album(s), \(pending.count) to fetch")
+        guard pending.isEmpty || lastFM != nil else {
+            print("error: set LASTFM_API_KEY to fetch tags.")
+            return
+        }
+
+        var tagsByID: [String: [String]] = [:]
+        if let lastFM, !pending.isEmpty {
+            // Chunked so long fetches show progress.
+            let chunkSize = 250
+            var done = 0
+            for start in stride(from: 0, to: pending.count, by: chunkSize) {
+                let chunk = Array(pending[start ..< Swift.min(start + chunkSize, pending.count)])
+                tagsByID.merge(await fetchTags(for: chunk, using: lastFM)) { _, new in new }
+                done += chunk.count
+                print("  fetched \(done)/\(pending.count)")
+            }
+        }
+        for i in albums.indices where albums[i].tags == nil {
+            albums[i].tags = tagsByID[albums[i].id] ?? []
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        do {
+            try (try encoder.encode(albums)).write(to: URL(fileURLWithPath: outPath))
+            let empty = albums.filter { ($0.tags ?? []).isEmpty }.count
+            print("wrote \(outPath) (\(empty) album(s) with no tags found)")
+        } catch {
+            print("error: could not write \(outPath): \(error)")
+        }
     }
 
     // MARK: - Judgments mode
@@ -680,6 +742,8 @@ struct EvalTool {
 
     options:
       --judgments <path>   run a labeled suite and report precision/recall/F1/NDCG
+      --bake <out>         fetch Last.fm tags for albums lacking baked ones and
+                           write the album file back out with tags filled in
       --albums <path>      JSON array of {id,title,artist,genres[,tags,language]}
                            (default: eval/sample-albums.json, or the judgments file's)
       --engine <name>      metadata (default) | embedding | hybrid

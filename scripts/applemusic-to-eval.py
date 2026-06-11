@@ -7,13 +7,23 @@ Apple's Music app (macOS) exports a plist XML via:
 That file is track-level; the eval harness wants album-level entries:
     { "id", "title" (album), "artist", "genres" }
 
+IDs are a short hash of artist+album, so they are stable across re-exports:
+judgments files curated against one conversion stay valid after your library
+grows and you re-export, as long as the album itself is still there.
+
 Usage:
     python3 scripts/applemusic-to-eval.py ~/Music/Library.xml > my-library.json
     swift run musicsearch-eval "Albums that are like Brian Eno" --albums my-library.json
 """
+import hashlib
 import json
 import plistlib
 import sys
+
+
+def stable_id(artist: str, album: str) -> str:
+    key = f"{artist.lower()}\x1f{album.lower()}".encode()
+    return hashlib.sha256(key).hexdigest()[:10]
 
 
 def main() -> int:
@@ -41,8 +51,13 @@ def main() -> int:
             entry["genres"].append(genre)
 
     out = []
-    for i, entry in enumerate(sorted(albums.values(), key=lambda e: (e["artist"], e["title"])), 1):
-        out.append({"id": str(i), "title": entry["title"], "artist": entry["artist"], "genres": entry["genres"]})
+    for entry in sorted(albums.values(), key=lambda e: (e["artist"], e["title"])):
+        out.append({
+            "id": stable_id(entry["artist"], entry["title"]),
+            "title": entry["title"],
+            "artist": entry["artist"],
+            "genres": entry["genres"],
+        })
 
     json.dump(out, sys.stdout, ensure_ascii=False, indent=2)
     print(f"\n# {len(out)} albums", file=sys.stderr)
