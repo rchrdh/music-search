@@ -33,12 +33,24 @@ public enum TagVocabulary {
         var seen = Set<String>()
         var grounded: [String] = []
         for raw in rawTags {
-            for tag in sortedVocabulary where tag.contains(raw) || raw.contains(tag) {
+            for tag in sortedVocabulary where matches(raw: raw, tag: tag) {
                 if seen.insert(tag).inserted {
                     grounded.append(tag)
                 }
             }
         }
         return grounded
+    }
+
+    /// Real libraries contain junk one- and two-character Last.fm tags ("t",
+    /// "uk") that substring-match almost any query word — so containment only
+    /// counts when the contained side is at least 3 characters. Exact equality
+    /// always matches, which is what keeps legitimately short tags reachable
+    /// (query "uk" still grounds to tag "uk").
+    private static func matches(raw: String, tag: String) -> Bool {
+        if tag == raw { return true }
+        if raw.count >= 3, tag.contains(raw) { return true }
+        if tag.count >= 3, raw.contains(tag) { return true }
+        return false
     }
 }

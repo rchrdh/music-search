@@ -28,6 +28,18 @@ final class TagVocabularyTests: XCTestCase {
         XCTAssertTrue(grounded.isEmpty)
     }
 
+    func testGroundIgnoresJunkFragmentTags() {
+        // Real libraries contain one-letter Last.fm tags; "t" must not ground
+        // for "ambient" just because it's a substring of it.
+        let grounded = TagVocabulary.ground(["ambient"], in: ["ambient", "t", "uk"])
+        XCTAssertEqual(grounded, ["ambient"])
+    }
+
+    func testGroundStillMatchesShortTagsExactly() {
+        let grounded = TagVocabulary.ground(["uk"], in: ["uk", "funk", "t"])
+        XCTAssertEqual(grounded, ["uk"])
+    }
+
     func testTopTagsOrdersByFrequencyThenName() {
         let tags = TagVocabulary.topTags(in: [
             ["ambient", "electronic"],

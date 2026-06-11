@@ -40,7 +40,17 @@ public struct HeuristicQueryParser: Sendable {
         } else {
             descriptivePart = lower[...]
         }
-        let stopWords: Set<String> = ["album", "albums", "music", "song", "songs", "that", "with", "the"]
+        // Domain noise plus 3+ letter function words ("are", "have", and the
+        // "don"/"doesn" stems that splitting "don't"/"doesn't" leaves behind).
+        // Against a real library's vocabulary, an unstopped function word
+        // substring-grounds into garbage: "are" → "rare groove", "cabaret".
+        let stopWords: Set<String> = [
+            "album", "albums", "music", "song", "songs", "record", "records",
+            "the", "that", "this", "these", "those", "with", "and", "are",
+            "was", "were", "not", "but", "for", "from", "into", "has", "have",
+            "had", "don", "doesn", "can", "could", "would", "should", "what",
+            "when", "where", "which", "who", "some", "any", "all",
+        ]
         for word in descriptivePart.split(whereSeparator: { !$0.isLetter }).map(String.init)
         where word.count > 2 && !stopWords.contains(word) && !tags.contains(word) {
             tags.append(word)
