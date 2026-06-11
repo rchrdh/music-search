@@ -88,6 +88,26 @@ whether a contrastively-trained sentence encoder (e.g. a small
 sentence-transformers model, or `NLEmbedding` on-device) flips the paraphrase
 case without breaking the others; the format below makes that a drop-in test.
 
+### What a real library adds (4845-track export, 3615 albums)
+
+Running the same comparison against a real export — curated judgments, baked
+tags — surfaced things the 42-album fixtures structurally cannot:
+
+- **Set-based retrieval doesn't scale.** "One matched tag = retrieved" returns
+  hundreds of albums when the vocabulary is real ("Japanese city pop" → 730,
+  because "pop" grounds into every pop-ish tag). Score with `--top <k>`
+  (precision/recall at the cutoff users actually see) on big libraries.
+- **The scorer doesn't weight tag specificity.** A "desert blues" query ranks
+  an album tagged `blues` level with one tagged `tuareg` — flat 2 points per
+  matched tag, ties broken by library order. The biggest open quality lever.
+- **Embeddings earn their keep on niche descriptive queries** ("Japanese city
+  pop": embedding NDCG@20 0.52 vs metadata 0.00) and still lose relational
+  ones — same shape as the fixture verdict, only amplified.
+- **Real data finds real bugs**: junk one-letter tags, function words
+  grounding into "rare groove"/"cabaret", and collaboration credits ("Brian
+  Eno & Harold Budd") slipping past the reference-artist exclusion were all
+  invisible on the fixtures.
+
 ### Regenerating embeddings
 
 `eval/embeddings.json` is model-agnostic: `{model, albums: {id: [Double]},

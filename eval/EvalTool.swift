@@ -79,6 +79,7 @@ struct EvalTool {
         let embeddingsPath = takeValue("--embeddings", from: &args) ?? "eval/embeddings.json"
         let threshold = takeValue("--threshold", from: &args).flatMap { Double($0) }
             ?? defaultCosineThreshold
+        let top = takeValue("--top", from: &args).flatMap { Int($0) }
         let query = args.first(where: { !$0.hasPrefix("--") }) ?? ""
 
         let engines: [Engine]
@@ -124,6 +125,7 @@ struct EvalTool {
                 engines: engines,
                 index: index,
                 threshold: threshold,
+                top: top,
                 limit: limit,
                 lastFM: lastFM
             )
@@ -216,6 +218,7 @@ struct EvalTool {
         engines: [Engine],
         index: EmbeddingIndex?,
         threshold: Double,
+        top: Int?,
         limit: Int?,
         lastFM: LastFMClient?
     ) async {
@@ -269,7 +272,7 @@ struct EvalTool {
             print("\"\(testCase.query)\"  (expected \(expected.count))")
 
             for engine in engines {
-                let retrievedIDs = retrieve(
+                var retrievedIDs = retrieve(
                     engine: engine,
                     albums: albums,
                     query: testCase.query,
@@ -282,6 +285,10 @@ struct EvalTool {
                     index: index,
                     threshold: threshold
                 )
+                // On a real-sized library every engine "matches" hundreds of
+                // albums; what the user actually sees is the top of the
+                // ranking, so --top scores precision/recall at that cutoff.
+                if let top { retrievedIDs = Array(retrievedIDs.prefix(top)) }
                 let metrics = EvalMetrics.compute(
                     retrieved: retrievedIDs, expected: expected, forbidden: forbidden
                 )
@@ -607,7 +614,7 @@ struct EvalTool {
 
         var matches: [(album: AlbumInput, combined: Double, metadata: SearchScorer.Score?, cosine: Double, order: Int)] = []
         for (order, album) in albums.enumerated() {
-            if referenceArtists.contains(album.artist.lowercased()) { continue }
+            if SearchScorer.isByReferencedArtist(artist: album.artist, referenceArtists: referenceArtists) { continue }
             if !targetLanguages.isEmpty,
                let language = languageByID[album.id], !language.isEmpty,
                !targetLanguages.contains(language) {
@@ -751,6 +758,7 @@ struct EvalTool {
       --embeddings <path>  precomputed vectors (default: eval/embeddings.json,
                            built by scripts/generate-embeddings.py)
       --threshold <t>      min cosine similarity to retrieve (default 0.5)
+      --top <k>            judgments mode: score only the top k of each ranking
       --limit <n>          only process the first n albums
       --language           fetch MusicBrainz language for candidates lacking a baked
                            one (slow: ~1 req/sec)

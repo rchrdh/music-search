@@ -40,7 +40,15 @@ def main() -> int:
     for track in tracks.values():
         album = (track.get("Album") or "").strip()
         # Prefer the album artist so compilations/multi-disc sets collapse.
-        artist = (track.get("Album Artist") or track.get("Artist") or "").strip()
+        # Compilation tracks without one would otherwise explode into one
+        # album row per track artist — group them as Various Artists, which
+        # is how MusicKit presents them in the app.
+        artist = (track.get("Album Artist") or "").strip()
+        if not artist:
+            if track.get("Compilation"):
+                artist = "Various Artists"
+            else:
+                artist = (track.get("Artist") or "").strip()
         if not album or not artist:
             continue  # singles / metadata-less items aren't useful here
 

@@ -63,7 +63,9 @@ public enum SearchScorer {
         // "Albums like X" means *other* artists: an album by a referenced
         // artist isn't a recommendation, it's the artist itself. Exclude it
         // outright so it never crowds out genuine similar-artist results.
-        if referenceArtists.contains(artist.lowercased()) {
+        // Substring, not equality: collaboration credits ("Brian Eno &
+        // Harold Budd", "Robert Fripp & Brian Eno") are still the artist.
+        if isByReferencedArtist(artist: artist, referenceArtists: referenceArtists) {
             return nil
         }
 
@@ -114,9 +116,16 @@ public enum SearchScorer {
         tagMatching: TagMatching = .substring
     ) -> Bool {
         let key = artist.lowercased()
-        if referenceArtists.contains(key) { return false }
+        if isByReferencedArtist(artist: artist, referenceArtists: referenceArtists) { return false }
         if similarArtists.contains(key) { return true }
         return wantedTags.contains { tagMatches($0, in: albumTags, mode: tagMatching) }
+    }
+
+    /// Whether the album's artist credit includes a referenced artist —
+    /// exactly, or as part of a collaboration credit.
+    public static func isByReferencedArtist(artist: String, referenceArtists: Set<String>) -> Bool {
+        let credit = artist.lowercased()
+        return referenceArtists.contains { credit.contains($0) }
     }
 
     private static func tagMatches(_ wanted: String, in albumTags: [String], mode: TagMatching) -> Bool {

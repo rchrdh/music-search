@@ -80,6 +80,21 @@ final class SearchScorerTests: XCTestCase {
         XCTAssertNil(score)
     }
 
+    func testReferenceArtistCollaborationCreditsAreExcluded() {
+        // A collaboration album is still the referenced artist: "like Brian
+        // Eno" must not recommend "Brian Eno & Harold Budd — The Pearl".
+        let score = SearchScorer.score(
+            artist: "Brian Eno & Harold Budd",
+            albumTags: ["ambient"],
+            albumLanguage: nil,
+            wantedTags: [],
+            targetLanguages: [],
+            similarArtists: ["harold budd"],
+            referenceArtists: ["brian eno"]
+        )
+        XCTAssertNil(score)
+    }
+
     func testNoSignalReturnsNil() {
         let score = SearchScorer.score(
             artist: "Death",
