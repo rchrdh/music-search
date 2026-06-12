@@ -97,9 +97,16 @@ tags — surfaced things the 42-album fixtures structurally cannot:
   hundreds of albums when the vocabulary is real ("Japanese city pop" → 730,
   because "pop" grounds into every pop-ish tag). Score with `--top <k>`
   (precision/recall at the cutoff users actually see) on big libraries.
-- **The scorer doesn't weight tag specificity.** A "desert blues" query ranks
-  an album tagged `blues` level with one tagged `tuareg` — flat 2 points per
-  matched tag, ties broken by library order. The biggest open quality lever.
+- **The scorer needed specificity-weighted, concept-grouped ranking.** Flat
+  scoring ranked an album tagged `blues` level with one tagged `tuareg`
+  (2 points per matched tag, ties broken by library order), and an album
+  matching six variants of "blues" outranked everything. Ranking now scales
+  each match by IDF-style tag rarity (`TagVocabulary.specificity`) and counts
+  each query word once, at its best-matching tag (`groundedGroups`) — the
+  retrieval threshold is unchanged. On the real-library suite this took
+  metadata from F1 0.24 / NDCG 0.27 to **F1 0.30 / NDCG 0.47** at top-20
+  ("Japanese city pop" and "Desert blues" went from 0.00 to 0.16 F1), with
+  fixture metrics unchanged. A/B it with `--flat`.
 - **Embeddings earn their keep on niche descriptive queries** ("Japanese city
   pop": embedding NDCG@20 0.52 vs metadata 0.00) and still lose relational
   ones — same shape as the fixture verdict, only amplified.

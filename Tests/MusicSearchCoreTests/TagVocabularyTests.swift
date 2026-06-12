@@ -40,6 +40,37 @@ final class TagVocabularyTests: XCTestCase {
         XCTAssertEqual(grounded, ["uk"])
     }
 
+    func testSpecificityFavorsRareTags() {
+        // 40 albums: "pop" on all of them, "tuareg" on one.
+        var lists = Array(repeating: ["pop"], count: 39)
+        lists.append(["pop", "tuareg"])
+        let weights = TagVocabulary.specificity(in: lists)
+        XCTAssertEqual(weights["tuareg"], 1.0)
+        XCTAssertEqual(weights["pop"], 0.0)
+    }
+
+    func testSpecificityDecaysSmoothlyWithFrequency() {
+        // df 1 of 20 → full weight; the weight strictly decreases as the
+        // tag gets more common — no knee where rare and common collapse.
+        var lists = Array(repeating: ["common"], count: 19)
+        lists.append(["common", "rare"])
+        for i in 0 ..< 4 { lists[i].append("niche") }
+        for i in 0 ..< 10 { lists[i].append("half") }
+        let weights = TagVocabulary.specificity(in: lists)
+        XCTAssertEqual(weights["rare"], 1.0)
+        let niche = weights["niche"]!
+        let half = weights["half"]!
+        XCTAssertGreaterThan(niche, half)
+        XCTAssertGreaterThan(half, 0.1)
+        XCTAssertLessThan(half, 0.5)
+    }
+
+    func testSpecificityCountsAlbumsNotOccurrences() {
+        // Duplicate tags within one album must not inflate its frequency.
+        let weights = TagVocabulary.specificity(in: [["jazz", "jazz"], ["rock"]])
+        XCTAssertEqual(weights["jazz"], weights["rock"])
+    }
+
     func testTopTagsOrdersByFrequencyThenName() {
         let tags = TagVocabulary.topTags(in: [
             ["ambient", "electronic"],

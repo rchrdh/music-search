@@ -80,6 +80,7 @@ struct EvalTool {
         let threshold = takeValue("--threshold", from: &args).flatMap { Double($0) }
             ?? defaultCosineThreshold
         let top = takeValue("--top", from: &args).flatMap { Int($0) }
+        let flat = takeFlag("--flat", from: &args)
         let query = args.first(where: { !$0.hasPrefix("--") }) ?? ""
 
         let engines: [Engine]
@@ -126,6 +127,7 @@ struct EvalTool {
                 index: index,
                 threshold: threshold,
                 top: top,
+                flat: flat,
                 limit: limit,
                 lastFM: lastFM
             )
@@ -142,6 +144,7 @@ struct EvalTool {
             engine: engines[0],
             index: index,
             threshold: threshold,
+            flat: flat,
             limit: limit,
             useLanguage: useLanguage,
             verbose: verbose,
@@ -219,6 +222,7 @@ struct EvalTool {
         index: EmbeddingIndex?,
         threshold: Double,
         top: Int?,
+        flat: Bool,
         limit: Int?,
         lastFM: LastFMClient?
     ) async {
@@ -242,6 +246,7 @@ struct EvalTool {
             tagsByID = resolved
         }
         let vocabulary = Set(tagsByID.values.joined())
+        let tagWeights = flat ? [:] : TagVocabulary.specificity(in: tagsByID.values)
         let languageByID = Dictionary(
             uniqueKeysWithValues: albums.compactMap { album in
                 album.language.map { (album.id, $0) }
@@ -279,6 +284,8 @@ struct EvalTool {
                     parsed: parsed,
                     vocabulary: vocabulary,
                     tagsByID: tagsByID,
+                    tagWeights: tagWeights,
+                    flat: flat,
                     languageByID: languageByID,
                     similar: similar,
                     referenceArtists: referenceArtists,
@@ -322,6 +329,8 @@ struct EvalTool {
         parsed: ParsedQuery,
         vocabulary: Set<String>,
         tagsByID: [String: [String]],
+        tagWeights: [String: Double],
+        flat: Bool,
         languageByID: [String: String],
         similar: Set<String>,
         referenceArtists: Set<String>,
@@ -335,6 +344,8 @@ struct EvalTool {
                 parsed: parsed,
                 vocabulary: vocabulary,
                 tagsByID: tagsByID,
+                tagWeights: tagWeights,
+                flat: flat,
                 languageByID: languageByID,
                 similar: similar,
                 referenceArtists: referenceArtists
@@ -355,6 +366,8 @@ struct EvalTool {
                 parsed: parsed,
                 vocabulary: vocabulary,
                 tagsByID: tagsByID,
+                tagWeights: tagWeights,
+                flat: flat,
                 languageByID: languageByID,
                 similar: similar,
                 referenceArtists: referenceArtists,
@@ -401,6 +414,7 @@ struct EvalTool {
         engine: Engine,
         index: EmbeddingIndex?,
         threshold: Double,
+        flat: Bool,
         limit: Int?,
         useLanguage: Bool,
         verbose: Bool,
@@ -428,9 +442,10 @@ struct EvalTool {
         // Ground the raw query words into the library's actual tag vocabulary
         // (the same step the app performs), so scoring is exact from here on.
         let vocabulary = Set(tagsByID.values.joined())
+        let tagWeights = flat ? [:] : TagVocabulary.specificity(in: tagsByID.values)
         let groundedTags = TagVocabulary.ground(parsed.descriptiveTags, in: vocabulary)
 
-        print("Query: \"\(query)\"  [engine: \(engine.rawValue)]")
+        print("Query: \"\(query)\"  [engine: \(engine.rawValue)\(flat ? ", flat scoring" : "")]")
         print("  raw tags: \(parsed.descriptiveTags)")
         print("  grounded tags: \(groundedTags)")
         print("  reference artists: \(parsed.referenceArtists)")
@@ -471,6 +486,8 @@ struct EvalTool {
                 parsed: parsed,
                 vocabulary: vocabulary,
                 tagsByID: tagsByID,
+                tagWeights: tagWeights,
+                flat: flat,
                 languageByID: languageByID,
                 similar: similar,
                 referenceArtists: referenceArtists,
@@ -492,6 +509,8 @@ struct EvalTool {
             parsed: parsed,
             vocabulary: vocabulary,
             tagsByID: tagsByID,
+            tagWeights: tagWeights,
+            flat: flat,
             languageByID: languageByID,
             similar: similar,
             referenceArtists: referenceArtists
@@ -500,7 +519,7 @@ struct EvalTool {
         print("=== \(ranked.count) match(es) ===")
         for (album, score) in ranked {
             let language = languageByID[album.id].flatMap { $0.isEmpty ? nil : $0 }
-            print("[\(score.value)] \(album.title) — \(album.artist)")
+            print(String(format: "[%d | w %.2f] %@ — %@", score.value, score.weight, album.title, album.artist))
             print("     \(score.reason)")
             print("     tags: \((tagsByID[album.id] ?? []).joined(separator: ", "))\(language.map { " | lang: \($0)" } ?? "")")
         }
@@ -551,19 +570,22 @@ struct EvalTool {
     // MARK: - Shared engine plumbing
 
     /// Grounds the parsed query into the vocabulary, scores every album with
-    /// exact tag matching, and returns matches ranked by score (ties keep
-    /// album order, so runs are deterministic).
+    /// exact tag matching, and returns matches ranked by specificity-weighted
+    /// score (ties keep album order, so runs are deterministic).
     private static func rankedMatches(
         albums: [AlbumInput],
         parsed: ParsedQuery,
         vocabulary: Set<String>,
         tagsByID: [String: [String]],
+        tagWeights: [String: Double],
+        flat: Bool,
         languageByID: [String: String],
         similar: Set<String>,
         referenceArtists: Set<String>
     ) -> [(album: AlbumInput, score: SearchScorer.Score)] {
         let targetLanguages = SearchScorer.targetLanguageCodes(from: parsed.descriptiveTags)
-        let groundedTags = TagVocabulary.ground(parsed.descriptiveTags, in: vocabulary)
+        let groups = TagVocabulary.groundedGroups(parsed.descriptiveTags, in: vocabulary)
+        let groundedTags = groups.flatMap { $0 }
 
         var matches: [(album: AlbumInput, score: SearchScorer.Score, index: Int)] = []
         for (index, album) in albums.enumerated() {
@@ -575,13 +597,17 @@ struct EvalTool {
                 targetLanguages: targetLanguages,
                 similarArtists: similar,
                 referenceArtists: referenceArtists,
-                tagMatching: .exact
+                tagMatching: .exact,
+                tagWeights: tagWeights,
+                wantedTagGroups: flat ? nil : groups
             ) {
                 matches.append((album, score, index))
             }
         }
         matches.sort {
-            $0.score.value != $1.score.value ? $0.score.value > $1.score.value : $0.index < $1.index
+            if $0.score.weight != $1.score.weight { return $0.score.weight > $1.score.weight }
+            if $0.score.value != $1.score.value { return $0.score.value > $1.score.value }
+            return $0.index < $1.index
         }
         return matches.map { ($0.album, $0.score) }
     }
@@ -602,6 +628,8 @@ struct EvalTool {
         parsed: ParsedQuery,
         vocabulary: Set<String>,
         tagsByID: [String: [String]],
+        tagWeights: [String: Double],
+        flat: Bool,
         languageByID: [String: String],
         similar: Set<String>,
         referenceArtists: Set<String>,
@@ -610,7 +638,8 @@ struct EvalTool {
         threshold: Double
     ) -> [(album: AlbumInput, combined: Double, metadata: SearchScorer.Score?, cosine: Double)] {
         let targetLanguages = SearchScorer.targetLanguageCodes(from: parsed.descriptiveTags)
-        let groundedTags = TagVocabulary.ground(parsed.descriptiveTags, in: vocabulary)
+        let groups = TagVocabulary.groundedGroups(parsed.descriptiveTags, in: vocabulary)
+        let groundedTags = groups.flatMap { $0 }
 
         var matches: [(album: AlbumInput, combined: Double, metadata: SearchScorer.Score?, cosine: Double, order: Int)] = []
         for (order, album) in albums.enumerated() {
@@ -629,7 +658,9 @@ struct EvalTool {
                 targetLanguages: targetLanguages,
                 similarArtists: similar,
                 referenceArtists: referenceArtists,
-                tagMatching: .exact
+                tagMatching: .exact,
+                tagWeights: tagWeights,
+                wantedTagGroups: flat ? nil : groups
             )
             let cosine: Double
             if let queryVector, let albumVector = index?.albums[album.id] {
@@ -640,7 +671,7 @@ struct EvalTool {
 
             let cosineCanRetrieve = referenceArtists.isEmpty && cosine >= threshold
             guard metadata != nil || cosineCanRetrieve else { continue }
-            let combined = Double(metadata?.value ?? 0) + hybridCosineWeight * cosine
+            let combined = (metadata?.weight ?? 0) + hybridCosineWeight * cosine
             matches.append((album, combined, metadata, cosine, order))
         }
         matches.sort {
@@ -759,6 +790,8 @@ struct EvalTool {
                            built by scripts/generate-embeddings.py)
       --threshold <t>      min cosine similarity to retrieve (default 0.5)
       --top <k>            judgments mode: score only the top k of each ranking
+      --flat               disable tag-specificity weighting (flat 2 pts/tag),
+                           for A/B-ing what the weighting buys
       --limit <n>          only process the first n albums
       --language           fetch MusicBrainz language for candidates lacking a baked
                            one (slow: ~1 req/sec)

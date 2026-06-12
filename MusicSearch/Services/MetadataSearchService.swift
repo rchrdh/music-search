@@ -54,9 +54,14 @@ struct MetadataSearchService: AISearchService {
                 // "french" may not exist as a library tag); tag matching uses
                 // the grounded vocabulary tags, exactly.
                 let targetLanguages = SearchScorer.targetLanguageCodes(from: intent.descriptiveTags)
-                let wantedTags = TagVocabulary.ground(intent.descriptiveTags, in: vocabulary)
+                // Rank by specificity-weighted score — a match on a rare tag
+                // ("tuareg") sorts above one on a ubiquitous tag ("pop") —
+                // counting each query concept once at its best-matching tag.
+                let wantedTagGroups = TagVocabulary.groundedGroups(intent.descriptiveTags, in: vocabulary)
+                let wantedTags = wantedTagGroups.flatMap { $0 }
+                let tagWeights = TagVocabulary.specificity(in: tagsByID.values)
 
-                var results: [SearchResult] = []
+                var scored: [(result: SearchResult, weight: Double)] = []
                 for album in albums {
                     let albumTags = tagsByID[album.id.rawValue] ?? []
                     if let score = SearchScorer.score(
@@ -67,14 +72,17 @@ struct MetadataSearchService: AISearchService {
                         targetLanguages: targetLanguages,
                         similarArtists: similar,
                         referenceArtists: referenceArtists,
-                        tagMatching: .exact
+                        tagMatching: .exact,
+                        tagWeights: tagWeights,
+                        wantedTagGroups: wantedTagGroups
                     ) {
-                        results.append(
-                            SearchResult(album: album, relevance: score.value, reason: score.reason)
+                        scored.append(
+                            (SearchResult(album: album, relevance: score.value, reason: score.reason), score.weight)
                         )
                     }
                 }
-                results.sort { $0.relevance > $1.relevance }
+                scored.sort { $0.weight > $1.weight }
+                let results = scored.map(\.result)
 
                 continuation.yield(SearchUpdate(newResults: results, progress: 1))
                 continuation.finish()

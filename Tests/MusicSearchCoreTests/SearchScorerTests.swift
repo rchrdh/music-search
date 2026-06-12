@@ -95,6 +95,60 @@ final class SearchScorerTests: XCTestCase {
         XCTAssertNil(score)
     }
 
+    func testWeightScalesTagMatchesBySpecificity() {
+        // Same flat value, different weights: the rare-tag match must carry
+        // the heavier ranking key.
+        let rare = SearchScorer.score(
+            artist: "Mdou Moctar", albumTags: ["tuareg"], albumLanguage: nil,
+            wantedTags: ["tuareg", "blues"], targetLanguages: [], similarArtists: [],
+            tagMatching: .exact, tagWeights: ["tuareg": 1.0, "blues": 0.1]
+        )
+        let common = SearchScorer.score(
+            artist: "Generic Blues Band", albumTags: ["blues"], albumLanguage: nil,
+            wantedTags: ["tuareg", "blues"], targetLanguages: [], similarArtists: [],
+            tagMatching: .exact, tagWeights: ["tuareg": 1.0, "blues": 0.1]
+        )
+        XCTAssertEqual(rare?.value, common?.value)
+        XCTAssertEqual(rare?.weight ?? 0, 2.0, accuracy: 1e-9)
+        XCTAssertEqual(common?.weight ?? 0, 0.2, accuracy: 1e-9)
+    }
+
+    func testGroupedWeightCountsEachConceptOnce() {
+        // Six variants of "blues" are one matched concept: the album with
+        // the rare "tuareg" match must outweigh the six-variant blues album.
+        let groups = [["desert blues", "tuareg"], ["blues", "chicago blues", "jump blues", "piano blues"]]
+        let wanted = groups.flatMap { $0 }
+        let weights = ["desert blues": 0.9, "tuareg": 0.8, "blues": 0.4,
+                       "chicago blues": 0.6, "jump blues": 0.6, "piano blues": 0.6]
+        let bluesFlood = SearchScorer.score(
+            artist: "Howlin' Wolf",
+            albumTags: ["blues", "chicago blues", "jump blues", "piano blues"],
+            albumLanguage: nil, wantedTags: wanted, targetLanguages: [], similarArtists: [],
+            tagMatching: .exact, tagWeights: weights, wantedTagGroups: groups
+        )
+        let desert = SearchScorer.score(
+            artist: "Mdou Moctar",
+            albumTags: ["tuareg", "desert blues", "blues"],
+            albumLanguage: nil, wantedTags: wanted, targetLanguages: [], similarArtists: [],
+            tagMatching: .exact, tagWeights: weights, wantedTagGroups: groups
+        )
+        // Blues album: one group matched, best 0.6 → 1.2.
+        XCTAssertEqual(bluesFlood?.weight ?? 0, 1.2, accuracy: 1e-9)
+        // Desert album: both groups matched, best 0.9 and 0.4 → 2.6.
+        XCTAssertEqual(desert?.weight ?? 0, 2.6, accuracy: 1e-9)
+    }
+
+    func testEmptyWeightsReproduceFlatScoring() {
+        let score = SearchScorer.score(
+            artist: "Artist", albumTags: ["jazz", "cool jazz"], albumLanguage: nil,
+            wantedTags: ["jazz", "cool jazz"], targetLanguages: [], similarArtists: ["artist"],
+            tagMatching: .exact
+        )
+        // 2 + 2 (tags) + 3 (similar): value capped at 5, weight uncapped.
+        XCTAssertEqual(score?.value, 5)
+        XCTAssertEqual(score?.weight ?? 0, 7.0, accuracy: 1e-9)
+    }
+
     func testNoSignalReturnsNil() {
         let score = SearchScorer.score(
             artist: "Death",

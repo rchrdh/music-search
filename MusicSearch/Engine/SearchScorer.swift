@@ -6,7 +6,13 @@ import Foundation
 public enum SearchScorer {
 
     public struct Score: Sendable {
+        /// Coarse 0–5 strength, used for the retrieval threshold and display.
         public let value: Int
+        /// Continuous ranking key: like `value`, but each tag match is scaled
+        /// by its specificity weight, so an album matching "tuareg" sorts
+        /// above one matching only "blues". Without weights it equals the
+        /// uncapped flat score.
+        public let weight: Double
         public let reason: String
     }
 
@@ -45,7 +51,14 @@ public enum SearchScorer {
     }
 
     /// Scores one album. `similarArtists` and `targetLanguages` should be
-    /// computed once per query and passed in.
+    /// computed once per query and passed in. `tagWeights` (from
+    /// `TagVocabulary.specificity`) scales each tag match's contribution to
+    /// the ranking weight by how rare the tag is; tags missing from the map
+    /// count at full weight, so an empty map reproduces flat scoring.
+    /// `wantedTagGroups` (from `TagVocabulary.groundedGroups`) makes the
+    /// ranking weight count each query concept once, at its best-matching
+    /// tag — without it, an album tagged with six variants of "blues" earns
+    /// six times the weight for one query word.
     public static func score(
         artist: String,
         albumTags: [String],
@@ -55,9 +68,12 @@ public enum SearchScorer {
         similarArtists: Set<String>,
         referenceArtists: Set<String> = [],
         threshold: Int = defaultThreshold,
-        tagMatching: TagMatching = .substring
+        tagMatching: TagMatching = .substring,
+        tagWeights: [String: Double] = [:],
+        wantedTagGroups: [[String]]? = nil
     ) -> Score? {
         var score = 0
+        var weight = 0.0
         var reasons: [String] = []
 
         // "Albums like X" means *other* artists: an album by a referenced
@@ -75,6 +91,7 @@ public enum SearchScorer {
         if !targetLanguages.isEmpty, let language = albumLanguage, !language.isEmpty {
             if targetLanguages.contains(language) {
                 score += 4
+                weight += 4
                 reasons.append("Confirmed language")
             } else {
                 return nil
@@ -82,7 +99,9 @@ public enum SearchScorer {
         }
 
         // Tag matches (substring either direction, so "french" matches
-        // "french pop" and vice versa).
+        // "french pop" and vice versa). The coarse score counts every match;
+        // the ranking weight counts each query concept (group) once, at its
+        // most specific matching tag.
         var matchedTags: [String] = []
         for wanted in wantedTags where tagMatches(wanted, in: albumTags, mode: tagMatching) {
             score += 2
@@ -91,15 +110,29 @@ public enum SearchScorer {
         if !matchedTags.isEmpty {
             reasons.append("Tagged \(matchedTags.joined(separator: ", "))")
         }
+        if let groups = wantedTagGroups {
+            for group in groups {
+                let best = group
+                    .filter { tagMatches($0, in: albumTags, mode: tagMatching) }
+                    .map { tagWeights[$0] ?? 1.0 }
+                    .max()
+                if let best { weight += 2 * best }
+            }
+        } else {
+            for matched in matchedTags {
+                weight += 2 * (tagWeights[matched] ?? 1.0)
+            }
+        }
 
         // Artist similarity for "like X" requests.
         if !similarArtists.isEmpty, similarArtists.contains(artist.lowercased()) {
             score += 3
+            weight += 3
             reasons.append("Similar artist")
         }
 
         guard score >= threshold else { return nil }
-        return Score(value: Swift.min(5, score), reason: reasons.joined(separator: " · "))
+        return Score(value: Swift.min(5, score), weight: weight, reason: reasons.joined(separator: " · "))
     }
 
     /// Whether an album has any signal *other than* a confirmed language — i.e. a
