@@ -7,8 +7,15 @@ import FoundationModels
 /// available.
 struct QueryParser: Sendable {
 
-    func parse(_ query: String) async -> QueryIntent {
-        if FoundationModelSearchService.isAvailable, let intent = await modelParse(query) {
+    /// Parses `query` into intent. When `tagVocabulary` (the distinct Last.fm
+    /// tags actually present in the user's library, most frequent first) is
+    /// provided, the model translates the request into that vocabulary — so
+    /// "chill music with no singing" can come back as ["chillout", "downtempo",
+    /// "instrumental"] rather than the user's literal words, closing the gap
+    /// between how people ask and how albums are tagged.
+    func parse(_ query: String, tagVocabulary: [String] = []) async -> QueryIntent {
+        if FoundationModelSearchService.isAvailable,
+           let intent = await modelParse(query, tagVocabulary: tagVocabulary) {
             return normalize(intent)
         }
         return heuristicParse(query)
@@ -16,8 +23,8 @@ struct QueryParser: Sendable {
 
     // MARK: - Model parsing
 
-    private func modelParse(_ query: String) async -> QueryIntent? {
-        let instructions = """
+    private func modelParse(_ query: String, tagVocabulary: [String]) async -> QueryIntent? {
+        var instructions = """
         You convert a user's music-search request into structured search terms. \
         Extract two things: (1) descriptive tags — genres, moods, styles, \
         languages, or qualities the user wants (e.g. "french", "new age", \
@@ -25,6 +32,17 @@ struct QueryParser: Sendable {
         in a similarity request such as "albums like Brian Eno". Use lowercase \
         tags. Do not invent reference artists that the user did not name.
         """
+        if !tagVocabulary.isEmpty {
+            instructions += """
+            \n\nThe user's library uses these tags: \
+            \(tagVocabulary.joined(separator: ", ")). \
+            Choose descriptive tags from this list — include every listed tag \
+            that satisfies the request, including synonyms of the user's words \
+            (e.g. for "chill" also include "chillout" or "downtempo" if listed). \
+            Additionally, always include any language the user asked for (e.g. \
+            "french") even if it is not in the list.
+            """
+        }
         do {
             let session = LanguageModelSession(instructions: instructions)
             let response = try await session.respond(

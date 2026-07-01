@@ -23,6 +23,24 @@ final class HeuristicQueryParserTests: XCTestCase {
         XCTAssertEqual(parsed.referenceArtists, ["Funkadelic"])
     }
 
+    func testFunctionWordsAreNotTags() {
+        // "are" must not survive as a descriptive tag: against a real
+        // library's vocabulary it substring-grounds into "rare groove",
+        // "cabaret", "tuareg" — and those tag matches outscore genuine
+        // similar-artist results.
+        let parsed = HeuristicQueryParser().parse("Albums that are like Brian Eno")
+        XCTAssertTrue(parsed.descriptiveTags.isEmpty)
+        XCTAssertEqual(parsed.referenceArtists, ["Brian Eno"])
+    }
+
+    func testContractionStemsAreNotTags() {
+        // Splitting "don't" on non-letters leaves "don", which would ground
+        // into "london". The negation itself is still unhandled (a known
+        // suite gap) — but the junk tags must not be.
+        let parsed = HeuristicQueryParser().parse("Albums that don't have vocals")
+        XCTAssertEqual(parsed.descriptiveTags, ["vocals"])
+    }
+
     func testLanguageAndGenreTogether() {
         let parsed = HeuristicQueryParser().parse("spanish rock like Santana")
         XCTAssertEqual(parsed.referenceArtists, ["Santana"])

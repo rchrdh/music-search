@@ -6,8 +6,25 @@ import Foundation
 public enum SearchScorer {
 
     public struct Score: Sendable {
+        /// Coarse 0–5 strength, used for the retrieval threshold and display.
         public let value: Int
+        /// Continuous ranking key: like `value`, but each tag match is scaled
+        /// by its specificity weight, so an album matching "tuareg" sorts
+        /// above one matching only "blues". Without weights it equals the
+        /// uncapped flat score.
+        public let weight: Double
         public let reason: String
+    }
+
+    /// How wanted tags are compared against an album's tags.
+    public enum TagMatching: Sendable {
+        /// Substring overlap in either direction ("french" matches "french pop").
+        /// For raw, ungrounded query words.
+        case substring
+        /// Exact equality — for wanted tags already grounded into the library's
+        /// vocabulary via `TagVocabulary.ground`, where the fuzziness has
+        /// already happened on the query side.
+        case exact
     }
 
     /// Minimum score for an album to be considered a match.
@@ -34,7 +51,14 @@ public enum SearchScorer {
     }
 
     /// Scores one album. `similarArtists` and `targetLanguages` should be
-    /// computed once per query and passed in.
+    /// computed once per query and passed in. `tagWeights` (from
+    /// `TagVocabulary.specificity`) scales each tag match's contribution to
+    /// the ranking weight by how rare the tag is; tags missing from the map
+    /// count at full weight, so an empty map reproduces flat scoring.
+    /// `wantedTagGroups` (from `TagVocabulary.groundedGroups`) makes the
+    /// ranking weight count each query concept once, at its best-matching
+    /// tag — without it, an album tagged with six variants of "blues" earns
+    /// six times the weight for one query word.
     public static func score(
         artist: String,
         albumTags: [String],
@@ -43,15 +67,21 @@ public enum SearchScorer {
         targetLanguages: Set<String>,
         similarArtists: Set<String>,
         referenceArtists: Set<String> = [],
-        threshold: Int = defaultThreshold
+        threshold: Int = defaultThreshold,
+        tagMatching: TagMatching = .substring,
+        tagWeights: [String: Double] = [:],
+        wantedTagGroups: [[String]]? = nil
     ) -> Score? {
         var score = 0
+        var weight = 0.0
         var reasons: [String] = []
 
         // "Albums like X" means *other* artists: an album by a referenced
         // artist isn't a recommendation, it's the artist itself. Exclude it
         // outright so it never crowds out genuine similar-artist results.
-        if referenceArtists.contains(artist.lowercased()) {
+        // Substring, not equality: collaboration credits ("Brian Eno &
+        // Harold Budd", "Robert Fripp & Brian Eno") are still the artist.
+        if isByReferencedArtist(artist: artist, referenceArtists: referenceArtists) {
             return nil
         }
 
@@ -61,6 +91,7 @@ public enum SearchScorer {
         if !targetLanguages.isEmpty, let language = albumLanguage, !language.isEmpty {
             if targetLanguages.contains(language) {
                 score += 4
+                weight += 4
                 reasons.append("Confirmed language")
             } else {
                 return nil
@@ -68,24 +99,40 @@ public enum SearchScorer {
         }
 
         // Tag matches (substring either direction, so "french" matches
-        // "french pop" and vice versa).
+        // "french pop" and vice versa). The coarse score counts every match;
+        // the ranking weight counts each query concept (group) once, at its
+        // most specific matching tag.
         var matchedTags: [String] = []
-        for wanted in wantedTags where tagMatches(wanted, in: albumTags) {
+        for wanted in wantedTags where tagMatches(wanted, in: albumTags, mode: tagMatching) {
             score += 2
             matchedTags.append(wanted)
         }
         if !matchedTags.isEmpty {
             reasons.append("Tagged \(matchedTags.joined(separator: ", "))")
         }
+        if let groups = wantedTagGroups {
+            for group in groups {
+                let best = group
+                    .filter { tagMatches($0, in: albumTags, mode: tagMatching) }
+                    .map { tagWeights[$0] ?? 1.0 }
+                    .max()
+                if let best { weight += 2 * best }
+            }
+        } else {
+            for matched in matchedTags {
+                weight += 2 * (tagWeights[matched] ?? 1.0)
+            }
+        }
 
         // Artist similarity for "like X" requests.
         if !similarArtists.isEmpty, similarArtists.contains(artist.lowercased()) {
             score += 3
+            weight += 3
             reasons.append("Similar artist")
         }
 
         guard score >= threshold else { return nil }
-        return Score(value: Swift.min(5, score), reason: reasons.joined(separator: " · "))
+        return Score(value: Swift.min(5, score), weight: weight, reason: reasons.joined(separator: " · "))
     }
 
     /// Whether an album has any signal *other than* a confirmed language — i.e. a
@@ -98,17 +145,28 @@ public enum SearchScorer {
         albumTags: [String],
         wantedTags: [String],
         similarArtists: Set<String>,
-        referenceArtists: Set<String> = []
+        referenceArtists: Set<String> = [],
+        tagMatching: TagMatching = .substring
     ) -> Bool {
         let key = artist.lowercased()
-        if referenceArtists.contains(key) { return false }
+        if isByReferencedArtist(artist: artist, referenceArtists: referenceArtists) { return false }
         if similarArtists.contains(key) { return true }
-        return wantedTags.contains { tagMatches($0, in: albumTags) }
+        return wantedTags.contains { tagMatches($0, in: albumTags, mode: tagMatching) }
     }
 
-    /// Substring match in either direction, so "french" matches "french pop"
-    /// and "ambient" matches "dark ambient".
-    private static func tagMatches(_ wanted: String, in albumTags: [String]) -> Bool {
-        albumTags.contains { $0.contains(wanted) || wanted.contains($0) }
+    /// Whether the album's artist credit includes a referenced artist —
+    /// exactly, or as part of a collaboration credit.
+    public static func isByReferencedArtist(artist: String, referenceArtists: Set<String>) -> Bool {
+        let credit = artist.lowercased()
+        return referenceArtists.contains { credit.contains($0) }
+    }
+
+    private static func tagMatches(_ wanted: String, in albumTags: [String], mode: TagMatching) -> Bool {
+        switch mode {
+        case .substring:
+            return albumTags.contains { $0.contains(wanted) || wanted.contains($0) }
+        case .exact:
+            return albumTags.contains(wanted)
+        }
     }
 }

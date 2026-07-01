@@ -6,85 +6,471 @@ import FoundationNetworking
 
 /// Command-line harness for refining search quality off-device.
 ///
-///   LASTFM_API_KEY=... swift run musicsearch-eval "Music in French" \
-///       --albums eval/sample-albums.json
+/// Two modes:
+///
+/// **Single query** — run one query and inspect the ranked results:
+///
+///     LASTFM_API_KEY=... swift run musicsearch-eval "Music in French" \
+///         --albums eval/sample-albums.json
+///
+/// **Judgments** — run a labeled suite and report precision/recall/F1/NDCG per
+/// query and in aggregate, so scoring/parsing changes are measured instead of
+/// eyeballed. Runs fully offline when the album file carries baked `tags`,
+/// `language`, and the judgments file carries `similarArtists`:
+///
+///     swift run musicsearch-eval --judgments eval/judgments.json
+///
+/// **Engines** — three interchangeable rankers, for A/B-ing retrieval
+/// strategies on the same suite (see eval/README.md for the comparison):
+///
+///   metadata   tag/language/similar-artist scoring (what the app ships)
+///   embedding  pure cosine similarity over precomputed vectors
+///              (eval/embeddings.json, built by scripts/generate-embeddings.py)
+///   hybrid     metadata gates + scoring, with embedding similarity adding
+///              recall and refining rank order
+///
+///     swift run musicsearch-eval --judgments eval/judgments.json --compare
 ///
 /// Flags:
-///   --albums <path>   JSON array of albums (defaults to the sample set)
-///   --limit <n>       only process the first n albums (handy with --language)
-///   --language        also fetch MusicBrainz language (slow: ~1 req/sec)
-///   --verbose         also print albums that did NOT match, with their tags
+///   --judgments <path>   run the labeled suite at <path>
+///   --bake <out>         fetch tags for albums lacking baked ones, write the
+///                        album file back out with tags filled in
+///   --albums <path>      JSON array of albums (default: sample set, or the
+///                        `albums` path named inside the judgments file)
+///   --engine <name>      metadata (default) | embedding | hybrid
+///   --compare            judgments mode: run all engines and compare
+///   --embeddings <path>  vector table (default: eval/embeddings.json)
+///   --threshold <t>      min cosine for the embedding engine to retrieve
+///                        (default 0.5)
+///   --limit <n>          only process the first n albums
+///   --language           also fetch MusicBrainz language for candidates that
+///                        lack a baked one (slow: ~1 req/sec)
+///   --verbose            also print albums that did NOT match, with their tags
+///
+/// LASTFM_API_KEY is only required when something must actually be fetched —
+/// albums without baked tags, or reference artists without provided similars.
 @main
 struct EvalTool {
+
+    enum Engine: String, CaseIterable {
+        case metadata, embedding, hybrid
+    }
+
+    /// Default minimum cosine similarity for the embedding/hybrid engines to
+    /// consider an album retrieved (chosen by sweeping the committed suite).
+    static let defaultCosineThreshold = 0.5
+
+    /// In hybrid ranking, one unit of cosine similarity is worth this many
+    /// metadata points — so a strong similarity (~0.7) counts about as much
+    /// as one matched tag (2 points).
+    static let hybridCosineWeight = 3.0
+
     static func main() async {
         var args = Array(CommandLine.arguments.dropFirst())
 
-        let albumsPath = takeValue("--albums", from: &args) ?? "eval/sample-albums.json"
+        let judgmentsPath = takeValue("--judgments", from: &args)
+        let bakePath = takeValue("--bake", from: &args)
+        let albumsOverride = takeValue("--albums", from: &args)
         let limit = takeValue("--limit", from: &args).flatMap { Int($0) }
         let useLanguage = takeFlag("--language", from: &args)
         let verbose = takeFlag("--verbose", from: &args)
+        let compare = takeFlag("--compare", from: &args)
+        let engineFlag = takeValue("--engine", from: &args)
+        let embeddingsPath = takeValue("--embeddings", from: &args) ?? "eval/embeddings.json"
+        let threshold = takeValue("--threshold", from: &args).flatMap { Double($0) }
+            ?? defaultCosineThreshold
+        let top = takeValue("--top", from: &args).flatMap { Int($0) }
+        let flat = takeFlag("--flat", from: &args)
         let query = args.first(where: { !$0.hasPrefix("--") }) ?? ""
+
+        let engines: [Engine]
+        if compare {
+            engines = Engine.allCases
+        } else if let engineFlag {
+            guard let engine = Engine(rawValue: engineFlag) else {
+                print("error: unknown engine \"\(engineFlag)\" — use metadata, embedding, or hybrid")
+                return
+            }
+            engines = [engine]
+        } else {
+            engines = [.metadata]
+        }
+
+        var index: EmbeddingIndex?
+        if engines.contains(where: { $0 != .metadata }) {
+            do {
+                index = try EmbeddingIndex(contentsOf: URL(fileURLWithPath: embeddingsPath))
+            } catch {
+                print("error: could not load embeddings from \(embeddingsPath) — generate them with scripts/generate-embeddings.py")
+                return
+            }
+        }
+
+        let apiKey = ProcessInfo.processInfo.environment["LASTFM_API_KEY"]
+        let lastFM = apiKey.flatMap { $0.isEmpty ? nil : LastFMClient(apiKey: $0) }
+
+        if let bakePath {
+            await runBake(
+                albumsPath: albumsOverride ?? "eval/sample-albums.json",
+                outPath: bakePath,
+                limit: limit,
+                lastFM: lastFM
+            )
+            return
+        }
+
+        if let judgmentsPath {
+            await runJudgments(
+                path: judgmentsPath,
+                albumsOverride: albumsOverride,
+                engines: engines,
+                index: index,
+                threshold: threshold,
+                top: top,
+                flat: flat,
+                limit: limit,
+                lastFM: lastFM
+            )
+            return
+        }
 
         guard !query.isEmpty else {
             print(usage)
             return
         }
-        guard let apiKey = ProcessInfo.processInfo.environment["LASTFM_API_KEY"], !apiKey.isEmpty else {
-            print("error: set LASTFM_API_KEY in the environment.")
+        await runSingleQuery(
+            query: query,
+            albumsPath: albumsOverride ?? "eval/sample-albums.json",
+            engine: engines[0],
+            index: index,
+            threshold: threshold,
+            flat: flat,
+            limit: limit,
+            useLanguage: useLanguage,
+            verbose: verbose,
+            lastFM: lastFM
+        )
+    }
+
+    // MARK: - Bake mode
+
+    /// Fetches Last.fm tags for every album that lacks baked ones (via the
+    /// same client and selection the engines use) and writes the album file
+    /// back out with `tags` filled in — so later eval runs against a real
+    /// library export are offline and deterministic. Albums whose lookup
+    /// finds nothing get `tags: []`, meaning "looked up, none found".
+    private static func runBake(
+        albumsPath: String,
+        outPath: String,
+        limit: Int?,
+        lastFM: LastFMClient?
+    ) async {
+        guard var albums = loadAlbums(at: albumsPath) else { return }
+        if let limit { albums = Array(albums.prefix(limit)) }
+        let pending = albums.filter { $0.tags == nil }
+        print("Baking tags into \(outPath): \(albums.count) album(s), \(pending.count) to fetch")
+        guard pending.isEmpty || lastFM != nil else {
+            print("error: set LASTFM_API_KEY to fetch tags.")
             return
         }
+
+        var tagsByID: [String: [String]] = [:]
+        if let lastFM, !pending.isEmpty {
+            // Chunked so long fetches show progress.
+            let chunkSize = 250
+            var done = 0
+            for start in stride(from: 0, to: pending.count, by: chunkSize) {
+                let chunk = Array(pending[start ..< Swift.min(start + chunkSize, pending.count)])
+                tagsByID.merge(await fetchTags(for: chunk, using: lastFM)) { _, new in new }
+                done += chunk.count
+                print("  fetched \(done)/\(pending.count)")
+            }
+        }
+        for i in albums.indices where albums[i].tags == nil {
+            albums[i].tags = tagsByID[albums[i].id] ?? []
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        do {
+            try (try encoder.encode(albums)).write(to: URL(fileURLWithPath: outPath))
+            let empty = albums.filter { ($0.tags ?? []).isEmpty }.count
+            print("wrote \(outPath) (\(empty) album(s) with no tags found)")
+        } catch {
+            print("error: could not write \(outPath): \(error)")
+        }
+    }
+
+    // MARK: - Judgments mode
+
+    private struct JudgmentsFile: Decodable {
+        var albums: String?
+        var similarArtists: [String: [String]]?
+        var cases: [Case]
+
+        struct Case: Decodable {
+            var query: String
+            var expected: [String]
+            var forbidden: [String]?
+        }
+    }
+
+    private static func runJudgments(
+        path: String,
+        albumsOverride: String?,
+        engines: [Engine],
+        index: EmbeddingIndex?,
+        threshold: Double,
+        top: Int?,
+        flat: Bool,
+        limit: Int?,
+        lastFM: LastFMClient?
+    ) async {
         guard
-            let data = FileManager.default.contents(atPath: albumsPath),
-            var albums = try? JSONDecoder().decode([AlbumInput].self, from: data)
+            let data = FileManager.default.contents(atPath: path),
+            let judgments = try? JSONDecoder().decode(JudgmentsFile.self, from: data)
         else {
-            print("error: could not load albums from \(albumsPath)")
+            print("error: could not load judgments from \(path)")
             return
         }
+        let albumsPath = albumsOverride ?? judgments.albums ?? "eval/sample-albums.json"
+        guard var albums = loadAlbums(at: albumsPath) else { return }
         if let limit { albums = Array(albums.prefix(limit)) }
 
-        let lastFM = LastFMClient(apiKey: apiKey)
-        let musicBrainz = MusicBrainzClient()
+        // Tags and similar artists only matter to the metadata-aware engines;
+        // a pure-embedding run shouldn't fail over a missing API key.
+        let needsMetadata = engines.contains { $0 != .embedding }
+        var tagsByID: [String: [String]] = [:]
+        if needsMetadata {
+            guard let resolved = await resolveTags(for: albums, using: lastFM) else { return }
+            tagsByID = resolved
+        }
+        let vocabulary = Set(tagsByID.values.joined())
+        let tagWeights = flat ? [:] : TagVocabulary.specificity(in: tagsByID.values)
+        let languageByID = Dictionary(
+            uniqueKeysWithValues: albums.compactMap { album in
+                album.language.map { (album.id, $0) }
+            }
+        )
+        let providedSimilar = (judgments.similarArtists ?? [:]).reduce(into: [String: [String]]()) {
+            $0[$1.key.lowercased()] = $1.value.map { $0.lowercased() }
+        }
+        let titleByID = Dictionary(uniqueKeysWithValues: albums.map { ($0.id, "\($0.title) — \($0.artist)") })
 
+        let engineList = engines.map(\.rawValue).joined(separator: ", ")
+        print("Judgments: \(path) (\(judgments.cases.count) cases) — albums: \(albumsPath) (\(albums.count)) — engines: \(engineList)\n")
+
+        var metricsByEngine: [Engine: [EvalMetrics]] = [:]
+        for testCase in judgments.cases {
+            let parsed = HeuristicQueryParser().parse(testCase.query)
+            let referenceArtists = Set(parsed.referenceArtists.map { $0.lowercased() })
+            var similar = Set<String>()
+            if needsMetadata {
+                guard let resolved = await resolveSimilar(
+                    for: parsed.referenceArtists, provided: providedSimilar, using: lastFM
+                ) else { return }
+                similar = resolved
+            }
+
+            let expected = Set(testCase.expected)
+            let forbidden = Set(testCase.forbidden ?? [])
+            print("\"\(testCase.query)\"  (expected \(expected.count))")
+
+            for engine in engines {
+                var retrievedIDs = retrieve(
+                    engine: engine,
+                    albums: albums,
+                    query: testCase.query,
+                    parsed: parsed,
+                    vocabulary: vocabulary,
+                    tagsByID: tagsByID,
+                    tagWeights: tagWeights,
+                    flat: flat,
+                    languageByID: languageByID,
+                    similar: similar,
+                    referenceArtists: referenceArtists,
+                    index: index,
+                    threshold: threshold
+                )
+                // On a real-sized library every engine "matches" hundreds of
+                // albums; what the user actually sees is the top of the
+                // ranking, so --top scores precision/recall at that cutoff.
+                if let top { retrievedIDs = Array(retrievedIDs.prefix(top)) }
+                let metrics = EvalMetrics.compute(
+                    retrieved: retrievedIDs, expected: expected, forbidden: forbidden
+                )
+                metricsByEngine[engine, default: []].append(metrics)
+                print("  \(pad(engine.rawValue))  \(format(metrics))  (retrieved \(retrievedIDs.count))")
+
+                // Misses and strays are only legible one engine at a time.
+                if engines.count == 1 {
+                    let missed = testCase.expected.filter { !retrievedIDs.contains($0) }
+                    let strays = retrievedIDs.filter { !expected.contains($0) }
+                    printAlbumList("missed", ids: missed, titles: titleByID, forbidden: [])
+                    printAlbumList("strays", ids: strays, titles: titleByID, forbidden: forbidden)
+                }
+            }
+            print("")
+        }
+
+        print("=== aggregate (\(judgments.cases.count) cases) ===")
+        for engine in engines {
+            let aggregate = EvalMetrics.aggregate(metricsByEngine[engine] ?? [])
+            print("  \(pad(engine.rawValue))  \(format(aggregate))")
+        }
+    }
+
+    /// Ranked retrieval for one query under one engine. The IDs come back in
+    /// rank order (NDCG depends on it).
+    private static func retrieve(
+        engine: Engine,
+        albums: [AlbumInput],
+        query: String,
+        parsed: ParsedQuery,
+        vocabulary: Set<String>,
+        tagsByID: [String: [String]],
+        tagWeights: [String: Double],
+        flat: Bool,
+        languageByID: [String: String],
+        similar: Set<String>,
+        referenceArtists: Set<String>,
+        index: EmbeddingIndex?,
+        threshold: Double
+    ) -> [String] {
+        switch engine {
+        case .metadata:
+            return rankedMatches(
+                albums: albums,
+                parsed: parsed,
+                vocabulary: vocabulary,
+                tagsByID: tagsByID,
+                tagWeights: tagWeights,
+                flat: flat,
+                languageByID: languageByID,
+                similar: similar,
+                referenceArtists: referenceArtists
+            ).map(\.album.id)
+
+        case .embedding:
+            guard let index, let queryVector = index.queryVector(for: query) else {
+                return []
+            }
+            return index.ranked(against: queryVector)
+                .filter { $0.similarity >= threshold }
+                .map(\.id)
+
+        case .hybrid:
+            guard let index else { return [] }
+            return rankedHybrid(
+                albums: albums,
+                parsed: parsed,
+                vocabulary: vocabulary,
+                tagsByID: tagsByID,
+                tagWeights: tagWeights,
+                flat: flat,
+                languageByID: languageByID,
+                similar: similar,
+                referenceArtists: referenceArtists,
+                queryVector: index.queryVector(for: query),
+                index: index,
+                threshold: threshold
+            ).map(\.album.id)
+        }
+    }
+
+    private static func pad(_ name: String, to width: Int = 9) -> String {
+        name.padding(toLength: Swift.max(width, name.count), withPad: " ", startingAt: 0)
+    }
+
+    private static func format(_ m: EvalMetrics) -> String {
+        String(
+            format: "precision %.2f  recall %.2f  f1 %.2f  ndcg %.2f  forbidden hits %d",
+            m.precision, m.recall, m.f1, m.ndcg, m.forbiddenHits
+        )
+    }
+
+    private static func printAlbumList(
+        _ label: String,
+        ids: [String],
+        titles: [String: String],
+        forbidden: Set<String>,
+        cap: Int = 8
+    ) {
+        guard !ids.isEmpty else { return }
+        for id in ids.prefix(cap) {
+            let marker = forbidden.contains(id) ? "  ✗ FORBIDDEN" : ""
+            print("  \(label): \(titles[id] ?? id)\(marker)")
+        }
+        if ids.count > cap {
+            print("  \(label): … +\(ids.count - cap) more")
+        }
+    }
+
+    // MARK: - Single-query mode
+
+    private static func runSingleQuery(
+        query: String,
+        albumsPath: String,
+        engine: Engine,
+        index: EmbeddingIndex?,
+        threshold: Double,
+        flat: Bool,
+        limit: Int?,
+        useLanguage: Bool,
+        verbose: Bool,
+        lastFM: LastFMClient?
+    ) async {
+        guard var albums = loadAlbums(at: albumsPath) else { return }
+        if let limit { albums = Array(albums.prefix(limit)) }
+
+        // Pure embedding ranking needs no metadata at all — short-circuit.
+        if engine == .embedding {
+            runSingleEmbeddingQuery(query: query, albums: albums, index: index, threshold: threshold)
+            return
+        }
+
+        let musicBrainz = MusicBrainzClient()
         let parsed = HeuristicQueryParser().parse(query)
         let targetLanguages = SearchScorer.targetLanguageCodes(from: parsed.descriptiveTags)
+        let referenceArtists = Set(parsed.referenceArtists.map { $0.lowercased() })
 
-        print("Query: \"\(query)\"")
-        print("  tags: \(parsed.descriptiveTags)")
+        guard let similar = await resolveSimilar(
+            for: parsed.referenceArtists, provided: [:], using: lastFM
+        ) else { return }
+        guard let tagsByID = await resolveTags(for: albums, using: lastFM) else { return }
+
+        // Ground the raw query words into the library's actual tag vocabulary
+        // (the same step the app performs), so scoring is exact from here on.
+        let vocabulary = Set(tagsByID.values.joined())
+        let tagWeights = flat ? [:] : TagVocabulary.specificity(in: tagsByID.values)
+        let groundedTags = TagVocabulary.ground(parsed.descriptiveTags, in: vocabulary)
+
+        print("Query: \"\(query)\"  [engine: \(engine.rawValue)\(flat ? ", flat scoring" : "")]")
+        print("  raw tags: \(parsed.descriptiveTags)")
+        print("  grounded tags: \(groundedTags)")
         print("  reference artists: \(parsed.referenceArtists)")
         if !targetLanguages.isEmpty { print("  target languages: \(targetLanguages.sorted())") }
         print("Albums: \(albums.count)\n")
 
-        // Similar artists for "like X" requests. The referenced artists
-        // themselves are tracked separately so the scorer can exclude their
-        // own albums (an Eno album isn't "like Eno", it *is* Eno).
-        let referenceArtists = Set(parsed.referenceArtists.map { $0.lowercased() })
-        var similar = Set<String>()
-        for artist in parsed.referenceArtists {
-            similar.formUnion(await lastFM.similarArtists(to: artist))
-        }
-
-        // Tags for every album (concurrently).
-        let tagsByID = await fetchTags(for: albums, using: lastFM)
-
         // Language, only when needed and requested (serialized for MusicBrainz).
         // Candidate narrowing: language is the expensive signal (~1/sec), so
         // resolve it only for albums that already pass a cheap pre-filter — a
-        // tag or similar-artist match — rather than the whole library. This is
-        // how a real app should work: narrow with cheap signals, then confirm or
-        // exclude the shortlist with the costly lookup. Trade-off: an album
-        // identifiable *only* by its confirmed language (no matching tag, not a
-        // similar artist) won't be promoted, since we never look it up — but such
-        // albums almost always carry a language/scene tag, so the recall cost is
-        // small and the speed win is large.
-        var languageByID: [String: String] = [:]
+        // tag or similar-artist match — rather than the whole library. Albums
+        // with a baked language never need a lookup.
+        var languageByID = Dictionary(
+            uniqueKeysWithValues: albums.compactMap { album in
+                album.language.map { (album.id, $0) }
+            }
+        )
         if useLanguage && !targetLanguages.isEmpty {
-            let candidates = albums.filter {
-                SearchScorer.hasNonLanguageSignal(
-                    artist: $0.artist,
-                    albumTags: tagsByID[$0.id] ?? [],
-                    wantedTags: parsed.descriptiveTags,
+            let candidates = albums.filter { album in
+                languageByID[album.id] == nil && SearchScorer.hasNonLanguageSignal(
+                    artist: album.artist,
+                    albumTags: tagsByID[album.id] ?? [],
+                    wantedTags: groundedTags,
                     similarArtists: similar,
-                    referenceArtists: referenceArtists
+                    referenceArtists: referenceArtists,
+                    tagMatching: .exact
                 )
             }
             print("Resolving language for \(candidates.count) candidate(s) of \(albums.count) via MusicBrainz (~1/sec)…\n")
@@ -94,42 +480,262 @@ struct EvalTool {
             }
         }
 
-        // Score and rank.
-        var matches: [(album: AlbumInput, score: SearchScorer.Score)] = []
-        var misses: [AlbumInput] = []
-        for album in albums {
-            let score = SearchScorer.score(
-                artist: album.artist,
-                albumTags: tagsByID[album.id] ?? [],
-                albumLanguage: languageByID[album.id],
-                wantedTags: parsed.descriptiveTags,
-                targetLanguages: targetLanguages,
-                similarArtists: similar,
-                referenceArtists: referenceArtists
+        if engine == .hybrid {
+            let ranked = rankedHybrid(
+                albums: albums,
+                parsed: parsed,
+                vocabulary: vocabulary,
+                tagsByID: tagsByID,
+                tagWeights: tagWeights,
+                flat: flat,
+                languageByID: languageByID,
+                similar: similar,
+                referenceArtists: referenceArtists,
+                queryVector: index?.queryVector(for: query),
+                index: index,
+                threshold: threshold
             )
-            if let score {
-                matches.append((album, score))
-            } else {
-                misses.append(album)
+            print("=== \(ranked.count) match(es) ===")
+            for match in ranked {
+                let metadataPart = match.metadata.map { "metadata \($0.value) (\($0.reason))" } ?? "no metadata signal"
+                print(String(format: "[%.2f] %@ — %@", match.combined, match.album.title, match.album.artist))
+                print(String(format: "     %@ · cosine %.2f", metadataPart, match.cosine))
             }
+            return
         }
-        matches.sort { $0.score.value > $1.score.value }
 
-        print("=== \(matches.count) match(es) ===")
-        for (album, score) in matches {
+        let ranked = rankedMatches(
+            albums: albums,
+            parsed: parsed,
+            vocabulary: vocabulary,
+            tagsByID: tagsByID,
+            tagWeights: tagWeights,
+            flat: flat,
+            languageByID: languageByID,
+            similar: similar,
+            referenceArtists: referenceArtists
+        )
+
+        print("=== \(ranked.count) match(es) ===")
+        for (album, score) in ranked {
             let language = languageByID[album.id].flatMap { $0.isEmpty ? nil : $0 }
-            print("[\(score.value)] \(album.title) — \(album.artist)")
+            print(String(format: "[%d | w %.2f] %@ — %@", score.value, score.weight, album.title, album.artist))
             print("     \(score.reason)")
             print("     tags: \((tagsByID[album.id] ?? []).joined(separator: ", "))\(language.map { " | lang: \($0)" } ?? "")")
         }
 
-        if verbose && !misses.isEmpty {
-            print("\n=== \(misses.count) non-match(es) ===")
-            for album in misses {
-                print("- \(album.title) — \(album.artist)")
-                print("     tags: \((tagsByID[album.id] ?? []).joined(separator: ", "))")
+        if verbose {
+            let matchedIDs = Set(ranked.map(\.album.id))
+            let misses = albums.filter { !matchedIDs.contains($0.id) }
+            if !misses.isEmpty {
+                print("\n=== \(misses.count) non-match(es) ===")
+                for album in misses {
+                    print("- \(album.title) — \(album.artist)")
+                    print("     tags: \((tagsByID[album.id] ?? []).joined(separator: ", "))")
+                }
             }
         }
+    }
+
+    private static func runSingleEmbeddingQuery(
+        query: String,
+        albums: [AlbumInput],
+        index: EmbeddingIndex?,
+        threshold: Double
+    ) {
+        guard let index else { return }
+        guard let queryVector = index.queryVector(for: query) else {
+            print("error: no precomputed vector for \"\(query)\" — regenerate with:")
+            print("  python3 scripts/generate-embeddings.py --query \"\(query)\"")
+            return
+        }
+        let titleByID = Dictionary(uniqueKeysWithValues: albums.map { ($0.id, "\($0.title) — \($0.artist)") })
+        let ranked = index.ranked(against: queryVector)
+        let retrieved = ranked.filter { $0.similarity >= threshold }
+
+        print("Query: \"\(query)\"  [engine: embedding, model: \(index.model), threshold \(threshold)]\n")
+        print("=== \(retrieved.count) match(es) ===")
+        for entry in retrieved {
+            print(String(format: "[%.2f] %@", entry.similarity, titleByID[entry.id] ?? entry.id))
+        }
+        let below = ranked.filter { $0.similarity < threshold }.prefix(5)
+        if !below.isEmpty {
+            print("\n--- next \(below.count) below threshold ---")
+            for entry in below {
+                print(String(format: "[%.2f] %@", entry.similarity, titleByID[entry.id] ?? entry.id))
+            }
+        }
+    }
+
+    // MARK: - Shared engine plumbing
+
+    /// Grounds the parsed query into the vocabulary, scores every album with
+    /// exact tag matching, and returns matches ranked by specificity-weighted
+    /// score (ties keep album order, so runs are deterministic).
+    private static func rankedMatches(
+        albums: [AlbumInput],
+        parsed: ParsedQuery,
+        vocabulary: Set<String>,
+        tagsByID: [String: [String]],
+        tagWeights: [String: Double],
+        flat: Bool,
+        languageByID: [String: String],
+        similar: Set<String>,
+        referenceArtists: Set<String>
+    ) -> [(album: AlbumInput, score: SearchScorer.Score)] {
+        let targetLanguages = SearchScorer.targetLanguageCodes(from: parsed.descriptiveTags)
+        let groups = TagVocabulary.groundedGroups(parsed.descriptiveTags, in: vocabulary)
+        let groundedTags = groups.flatMap { $0 }
+
+        var matches: [(album: AlbumInput, score: SearchScorer.Score, index: Int)] = []
+        for (index, album) in albums.enumerated() {
+            if let score = SearchScorer.score(
+                artist: album.artist,
+                albumTags: tagsByID[album.id] ?? [],
+                albumLanguage: languageByID[album.id],
+                wantedTags: groundedTags,
+                targetLanguages: targetLanguages,
+                similarArtists: similar,
+                referenceArtists: referenceArtists,
+                tagMatching: .exact,
+                tagWeights: tagWeights,
+                wantedTagGroups: flat ? nil : groups
+            ) {
+                matches.append((album, score, index))
+            }
+        }
+        matches.sort {
+            if $0.score.weight != $1.score.weight { return $0.score.weight > $1.score.weight }
+            if $0.score.value != $1.score.value { return $0.score.value > $1.score.value }
+            return $0.index < $1.index
+        }
+        return matches.map { ($0.album, $0.score) }
+    }
+
+    /// Hybrid ranking: the metadata engine's hard gates stay hard (an album by
+    /// the referenced artist, or with a confirmed language mismatch, never
+    /// surfaces no matter how similar its embedding) — but retrieval widens to
+    /// anything with *either* a metadata match or sufficient cosine
+    /// similarity, and rank order blends both signals.
+    ///
+    /// Exception: on relational queries ("like X") cosine never *adds*
+    /// retrieval, only refines rank order. Artist similarity is a relation
+    /// between artists, not a property of an album's text — embeddings of
+    /// album metadata cannot express it, and letting them widen retrieval
+    /// there measurably pulls in junk (see eval/README.md).
+    private static func rankedHybrid(
+        albums: [AlbumInput],
+        parsed: ParsedQuery,
+        vocabulary: Set<String>,
+        tagsByID: [String: [String]],
+        tagWeights: [String: Double],
+        flat: Bool,
+        languageByID: [String: String],
+        similar: Set<String>,
+        referenceArtists: Set<String>,
+        queryVector: [Double]?,
+        index: EmbeddingIndex?,
+        threshold: Double
+    ) -> [(album: AlbumInput, combined: Double, metadata: SearchScorer.Score?, cosine: Double)] {
+        let targetLanguages = SearchScorer.targetLanguageCodes(from: parsed.descriptiveTags)
+        let groups = TagVocabulary.groundedGroups(parsed.descriptiveTags, in: vocabulary)
+        let groundedTags = groups.flatMap { $0 }
+
+        var matches: [(album: AlbumInput, combined: Double, metadata: SearchScorer.Score?, cosine: Double, order: Int)] = []
+        for (order, album) in albums.enumerated() {
+            if SearchScorer.isByReferencedArtist(artist: album.artist, referenceArtists: referenceArtists) { continue }
+            if !targetLanguages.isEmpty,
+               let language = languageByID[album.id], !language.isEmpty,
+               !targetLanguages.contains(language) {
+                continue
+            }
+
+            let metadata = SearchScorer.score(
+                artist: album.artist,
+                albumTags: tagsByID[album.id] ?? [],
+                albumLanguage: languageByID[album.id],
+                wantedTags: groundedTags,
+                targetLanguages: targetLanguages,
+                similarArtists: similar,
+                referenceArtists: referenceArtists,
+                tagMatching: .exact,
+                tagWeights: tagWeights,
+                wantedTagGroups: flat ? nil : groups
+            )
+            let cosine: Double
+            if let queryVector, let albumVector = index?.albums[album.id] {
+                cosine = EmbeddingIndex.cosine(queryVector, albumVector)
+            } else {
+                cosine = 0
+            }
+
+            let cosineCanRetrieve = referenceArtists.isEmpty && cosine >= threshold
+            guard metadata != nil || cosineCanRetrieve else { continue }
+            let combined = (metadata?.weight ?? 0) + hybridCosineWeight * cosine
+            matches.append((album, combined, metadata, cosine, order))
+        }
+        matches.sort {
+            $0.combined != $1.combined ? $0.combined > $1.combined : $0.order < $1.order
+        }
+        return matches.map { ($0.album, $0.combined, $0.metadata, $0.cosine) }
+    }
+
+    private static func loadAlbums(at path: String) -> [AlbumInput]? {
+        guard
+            let data = FileManager.default.contents(atPath: path),
+            let albums = try? JSONDecoder().decode([AlbumInput].self, from: data)
+        else {
+            print("error: could not load albums from \(path)")
+            return nil
+        }
+        return albums
+    }
+
+    /// Tags for every album: baked ones as-is, the rest fetched from Last.fm
+    /// with bounded concurrency. Fails (with a message) if a fetch is needed
+    /// but no API key was provided.
+    private static func resolveTags(
+        for albums: [AlbumInput],
+        using lastFM: LastFMClient?
+    ) async -> [String: [String]]? {
+        var result: [String: [String]] = [:]
+        var pending: [AlbumInput] = []
+        for album in albums {
+            if let tags = album.tags {
+                result[album.id] = tags
+            } else {
+                pending.append(album)
+            }
+        }
+        guard !pending.isEmpty else { return result }
+        guard let lastFM else {
+            print("error: \(pending.count) album(s) have no baked tags — set LASTFM_API_KEY to fetch them.")
+            return nil
+        }
+        let fetched = await fetchTags(for: pending, using: lastFM)
+        result.merge(fetched) { _, new in new }
+        return result
+    }
+
+    /// The similar-artist set for "like X" requests: provided lists when
+    /// available (offline judgments), Last.fm otherwise.
+    private static func resolveSimilar(
+        for referenceArtists: [String],
+        provided: [String: [String]],
+        using lastFM: LastFMClient?
+    ) async -> Set<String>? {
+        var similar = Set<String>()
+        for artist in referenceArtists {
+            if let list = provided[artist.lowercased()] {
+                similar.formUnion(list)
+            } else if let lastFM {
+                similar.formUnion(await lastFM.similarArtists(to: artist))
+            } else {
+                print("error: no similar-artist list for \"\(artist)\" — add it to the judgments file or set LASTFM_API_KEY.")
+                return nil
+            }
+        }
+        return similar
     }
 
     /// Fetches tags for all albums with bounded concurrency.
@@ -169,12 +775,28 @@ struct EvalTool {
     }
 
     private static let usage = """
-    usage: LASTFM_API_KEY=<key> swift run musicsearch-eval "<query>" [options]
+    usage: swift run musicsearch-eval "<query>" [options]
+           swift run musicsearch-eval --judgments eval/judgments.json [options]
 
     options:
-      --albums <path>   JSON array of {id,title,artist,genres} (default: eval/sample-albums.json)
-      --limit <n>       only process the first n albums
-      --language        also fetch MusicBrainz language (slow: ~1 req/sec)
-      --verbose         also list albums that did not match
+      --judgments <path>   run a labeled suite and report precision/recall/F1/NDCG
+      --bake <out>         fetch Last.fm tags for albums lacking baked ones and
+                           write the album file back out with tags filled in
+      --albums <path>      JSON array of {id,title,artist,genres[,tags,language]}
+                           (default: eval/sample-albums.json, or the judgments file's)
+      --engine <name>      metadata (default) | embedding | hybrid
+      --compare            judgments mode: run every engine and compare aggregates
+      --embeddings <path>  precomputed vectors (default: eval/embeddings.json,
+                           built by scripts/generate-embeddings.py)
+      --threshold <t>      min cosine similarity to retrieve (default 0.5)
+      --top <k>            judgments mode: score only the top k of each ranking
+      --flat               disable tag-specificity weighting (flat 2 pts/tag),
+                           for A/B-ing what the weighting buys
+      --limit <n>          only process the first n albums
+      --language           fetch MusicBrainz language for candidates lacking a baked
+                           one (slow: ~1 req/sec)
+      --verbose            also list albums that did not match
+
+    LASTFM_API_KEY is required only when tags or similar artists must be fetched.
     """
 }
